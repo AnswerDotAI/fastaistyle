@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "chkstyle"
+name = "fastaistyle"
 dynamic = ["version"]
 description = "Style checker for fast.ai coding conventions"
 readme = "README.md"
@@ -23,7 +23,11 @@ classifiers = [
 chkstyle = "chkstyle:cli"
 
 [project.urls]
-Homepage = "https://github.com/AnswerDotAI/chkstyle"
+Homepage = "https://github.com/AnswerDotAI/fastaistyle"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["chkstyle.py"]
 
 [tool.hatch.version]
 path = "chkstyle.py"

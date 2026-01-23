@@ -1,7 +1,7 @@
-# chkstyle
+# fastaistyle
 
 ```bash
-pip install chkstyle
+pip install fastaistyle
 ```
 
 A style checker that enforces the [fast.ai coding style](https://docs.fast.ai/dev/style.html)—a compact, readable approach to Python that keeps more code visible on screen and reduces cognitive load.
@@ -58,14 +58,14 @@ Domain experts recognize `nll` (negative log likelihood) instantly. Spelling it 
 ## Installation
 
 ```bash
-pip install chkstyle
+pip install fastaistyle
 ```
 
 Or install from source:
 
 ```bash
-git clone https://github.com/AnswerDotAI/chkstyle
-cd chkstyle
+git clone https://github.com/AnswerDotAI/fastaistyle
+cd fastaistyle
 pip install -e .
 ```
 
