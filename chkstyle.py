@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 
 import ast, io, math, os, re, sys, tokenize
 
