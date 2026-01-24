@@ -81,7 +81,23 @@ Check a specific path:
 chkstyle path/to/code/
 ```
 
+Skip folders matching a regex (must match the whole folder name):
+```bash
+chkstyle --skip-folder-re 'test.*|migrations|vendor'
+```
+
 The checker prints violations with file paths, line numbers, and the offending code.
+
+## Configuration
+
+Configure `chkstyle` in your `pyproject.toml`:
+
+```toml
+[tool.chkstyle]
+skip-folder-re = "test.*|migrations|vendor"
+```
+
+Command-line arguments override config file settings.
 
 ## What It Checks
 
@@ -211,6 +227,23 @@ carefully_formatted = {
 ```bash
 pytest
 ```
+
+## Development
+
+Create a PR with a label (for release notes):
+```bash
+./tools/pr.sh enhancement "Add new feature"
+./tools/pr.sh bug "Fix something"
+```
+
+Release after PRs are merged:
+```bash
+./tools/release.sh        # patch bump (default)
+./tools/release.sh minor  # minor bump
+./tools/release.sh major  # major bump
+```
+
+This tags the current version, pushes to trigger PyPI publish, then bumps for the next dev cycle.
 
 ## Philosophy
 
