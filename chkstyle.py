@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "0.0.8"
+__version__ = "0.0.9"
 
 import ast, io, math, os, re, sys, tokenize
 try: import tomllib
