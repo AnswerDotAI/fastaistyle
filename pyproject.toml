@@ -9,6 +9,7 @@ description = "Style checker for fast.ai coding conventions"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
+dependencies = ["tomli; python_version < '3.11'"]
 authors = [{name = "Jeremy Howard", email = "j@fast.ai"}]
 classifiers = [
     "Development Status :: 4 - Beta",

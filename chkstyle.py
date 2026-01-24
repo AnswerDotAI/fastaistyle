@@ -2,16 +2,27 @@
 __version__ = "0.0.8"
 
 import ast, io, math, os, re, sys, tokenize
+try: import tomllib
+except ImportError: import tomli as tomllib
 
 SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".venv", "venv", "dist", "build"}
 WRAP_WIDTH = 120
 COMPOUND_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.FunctionDef,
     ast.AsyncFunctionDef, ast.ClassDef)
 
-def iter_py_files(root: str):
+def load_config(root="."):
+    "Load config from pyproject.toml."
+    path = os.path.join(root, "pyproject.toml")
+    if not os.path.exists(path): return {}
+    with open(path, "rb") as f: data = tomllib.load(f)
+    return data.get("tool", {}).get("chkstyle", {})
+
+def _skip(d, skip_re): return d in SKIP_DIRS or d.startswith(".") or (skip_re and skip_re.fullmatch(d))
+
+def iter_py_files(root: str, skip_re=None):
     "Iter py files."
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames if not _skip(d, skip_re)]
         for name in filenames:
             if not name.endswith(".py"): continue
             path = os.path.join(dirpath, name)
@@ -282,9 +293,16 @@ def check_file(path: str) -> list[tuple]:
 
 def main(argv: list[str]) -> int:
     "Main."
-    root = argv[1] if len(argv) > 1 else "."
+    import argparse
+    parser = argparse.ArgumentParser(description="Check Python files for style violations")
+    parser.add_argument("root", nargs="?", default=".", help="Root directory to check")
+    parser.add_argument("--skip-folder-re", help="Regex to skip folders (must match whole name)")
+    args = parser.parse_args(argv[1:])
+    cfg = load_config(args.root)
+    skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
+    skip_re = re.compile(skip_pattern) if skip_pattern else None
     all_violations = []
-    for path in iter_py_files(root): all_violations.extend(check_file(path))
+    for path in iter_py_files(args.root, skip_re): all_violations.extend(check_file(path))
     for path, lineno, msg, lines in sorted(all_violations,
         key=lambda item: (item[0], item[1], item[2])):
         print(f"# {path}:{lineno}: {msg}")
