@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.0.10
+
+### New Features
+
+- Add Jupyter notebook (.ipynb) support ([#3](https://github.com/AnswerDotAI/fastaistyle/pull/3)), thanks to [@jph00](https://github.com/jph00)
+
+
 ## 0.0.9
 
 ### New Features
