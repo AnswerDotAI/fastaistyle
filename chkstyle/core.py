@@ -1,4 +1,4 @@
-import ast, io, math, os, re, sys, tokenize
+import ast, io, json, math, os, re, sys, tokenize
 try: import tomllib
 except ImportError: import tomli as tomllib
 
@@ -17,11 +17,11 @@ def load_config(root="."):
 def _skip(d, skip_re): return d in SKIP_DIRS or d.startswith(".") or (skip_re and skip_re.fullmatch(d))
 
 def iter_py_files(root: str, skip_re=None):
-    "Iter py files."
+    "Iter py and ipynb files."
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [d for d in dirnames if not _skip(d, skip_re)]
         for name in filenames:
-            if not name.endswith(".py"): continue
+            if not (name.endswith(".py") or name.endswith(".ipynb")): continue
             path = os.path.join(dirpath, name)
             if os.path.islink(path): continue
             yield path
@@ -228,9 +228,8 @@ def suppressed_lines(lines: list[str]) -> set[int]:
             ignore_next = False
     return suppressed
 
-def check_file(path: str) -> list[tuple]:
-    "Check file."
-    with open(path, encoding="utf-8") as f: source = f.read()
+def check_source(source: str, path: str) -> list[tuple]:
+    "Check source code string for style violations."
     lines = source.splitlines()
     if should_skip_file(lines): return []
     try: tree = ast.parse(source, filename=path)
@@ -304,6 +303,32 @@ def check_file(path: str) -> list[tuple]:
             check_suite("finally", node, node.finalbody, path, source, lines, violations, suppressed)
     return violations
 
+def check_file(path: str) -> list[tuple]:
+    "Check Python file for style violations."
+    with open(path, encoding="utf-8") as f: source = f.read()
+    return check_source(source, path)
+
+def check_notebook(path: str) -> list[tuple]:
+    "Check Jupyter notebook for style violations."
+    with open(path, encoding="utf-8") as f: nb = json.load(f)
+    violations = []
+    for cell in nb.get("cells", []):
+        if cell.get("cell_type") != "code": continue
+        cell_id = cell.get("id", "unknown")
+        source_lines = cell.get("source", [])
+        if isinstance(source_lines, str): source = source_lines
+        else: source = "".join(source_lines)
+        if not source.strip(): continue
+        cell_path = f"{path}:cell[{cell_id}]"
+        cell_violations = check_source(source, cell_path)
+        violations.extend(cell_violations)
+    return violations
+
+def check_path(path: str) -> list[tuple]:
+    "Check a single file (py or ipynb) for style violations."
+    if path.endswith(".ipynb"): return check_notebook(path)
+    return check_file(path)
+
 def main(argv: list[str]) -> int:
     "Main."
     import argparse
@@ -313,12 +338,12 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
     all_violations = []
     if os.path.isfile(args.root):
-        all_violations.extend(check_file(args.root))
+        all_violations.extend(check_path(args.root))
     else:
         cfg = load_config(args.root)
         skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
         skip_re = re.compile(skip_pattern) if skip_pattern else None
-        for path in iter_py_files(args.root, skip_re): all_violations.extend(check_file(path))
+        for path in iter_py_files(args.root, skip_re): all_violations.extend(check_path(path))
     for path, lineno, msg, lines in sorted(all_violations, key=lambda item: (item[0], item[1], item[2])):
         print(f"# {path}:{lineno}: {msg}")
         for line in lines: print(line)

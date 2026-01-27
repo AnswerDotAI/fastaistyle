@@ -88,6 +88,15 @@ chkstyle --skip-folder-re 'test.*|migrations|vendor'
 
 The checker prints violations with file paths, line numbers, and the offending code.
 
+### Jupyter Notebook Support
+
+`chkstyle` automatically checks `.ipynb` files alongside `.py` files. For notebooks, violations show the cell ID and line number within the cell:
+
+```
+# notebook.ipynb:cell[abc123]:3: lhs assignment annotation
+x: int = 1
+```
+
 ## Configuration
 
 Configure `chkstyle` in your `pyproject.toml`:
