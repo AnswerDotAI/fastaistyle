@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-__version__ = "0.0.9"
-
 import ast, io, math, os, re, sys, tokenize
 try: import tomllib
 except ImportError: import tomli as tomllib
@@ -61,9 +58,16 @@ def combined_len(seg_lines: list[str], indent: int) -> int:
     "Combined length."
     return sum(len(line.strip()) for line in seg_lines) + indent
 
+def _has_trailing_comment(line: str) -> bool:
+    "Check if line has a trailing comment (# not at start of stripped content)."
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'): return False
+    return '#' in stripped
+
 def is_inefficient_multiline(seg_lines: list[str], indent: int) -> bool:
     "Inefficient multiline."
     if len(seg_lines) <= 1: return False
+    if any(_has_trailing_comment(line) for line in seg_lines): return False
     total = combined_len(seg_lines, indent)
     needed = math.ceil(total / WRAP_WIDTH)
     return needed < len(seg_lines)
@@ -113,6 +117,7 @@ def check_suite(parent_kind: str, node, suite, path: str, source: str, lines: li
     header_lineno = getattr(node, "lineno", stmt.lineno)
     if parent_kind in ("else", "finally"): header_lineno = find_suite_header(lines, stmt.lineno, header_lineno, parent_kind)
     if stmt.lineno <= header_lineno: return
+    if parent_kind == "def" and any(_has_trailing_comment(lines[i-1]) for i in range(header_lineno, stmt.lineno)): return
     total_len = suite_len(lines, header_lineno, stmt.lineno)
     if total_len is not None and total_len > 130: return
     header_line = lines[header_lineno - 1].rstrip("\n")
@@ -129,10 +134,15 @@ def check_multiline_sig(node, lines: list[str], path: str, violations: list[tupl
     end = body_start - 1
     if end <= start: return
     seg_lines = [lines[i - 1].rstrip("\n") for i in range(start, end + 1)]
-    if isinstance(node, ast.ClassDef) and any(line.lstrip().startswith("@") for line in seg_lines[1:]): return
+    if any(line.lstrip().startswith("@") for line in seg_lines[1:]): return
     indent = first_line_indent(lines, start)
     if not is_inefficient_multiline(seg_lines, indent): return
     add_violation(violations, path, start, "inefficient multiline signature/header", seg_lines, suppressed)
+
+def _is_multiline_str(node) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str): return "\n" in node.value
+    if isinstance(node, ast.JoinedStr): return any(isinstance(v, ast.Constant) and "\n" in str(v.value) for v in node.values)
+    return False
 
 def check_multiline_expr(node, source: str, lines: list[str], path: str, violations: list[tuple], suppressed: set[int]):
     "Check multiline expression layout."
@@ -140,6 +150,9 @@ def check_multiline_expr(node, source: str, lines: list[str], path: str, violati
     if getattr(node, "end_lineno", node.lineno) <= node.lineno: return
     if isinstance(node, ast.Constant) and isinstance(node.value, str): return
     if isinstance(node, ast.JoinedStr): return
+    if isinstance(node, ast.Call):
+        args = list(node.args) + [kw.value for kw in node.keywords]
+        if any(_is_multiline_str(arg) for arg in args): return
     seg_lines = segment_lines(source, node)
     if not seg_lines or len(seg_lines) <= 1: return
     indent = first_line_indent(lines, node.lineno)
@@ -295,16 +308,18 @@ def main(argv: list[str]) -> int:
     "Main."
     import argparse
     parser = argparse.ArgumentParser(description="Check Python files for style violations")
-    parser.add_argument("root", nargs="?", default=".", help="Root directory to check")
+    parser.add_argument("root", nargs="?", default=".", help="Root directory or file to check")
     parser.add_argument("--skip-folder-re", help="Regex to skip folders (must match whole name)")
     args = parser.parse_args(argv[1:])
-    cfg = load_config(args.root)
-    skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
-    skip_re = re.compile(skip_pattern) if skip_pattern else None
     all_violations = []
-    for path in iter_py_files(args.root, skip_re): all_violations.extend(check_file(path))
-    for path, lineno, msg, lines in sorted(all_violations,
-        key=lambda item: (item[0], item[1], item[2])):
+    if os.path.isfile(args.root):
+        all_violations.extend(check_file(args.root))
+    else:
+        cfg = load_config(args.root)
+        skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
+        skip_re = re.compile(skip_pattern) if skip_pattern else None
+        for path in iter_py_files(args.root, skip_re): all_violations.extend(check_file(path))
+    for path, lineno, msg, lines in sorted(all_violations, key=lambda item: (item[0], item[1], item[2])):
         print(f"# {path}:{lineno}: {msg}")
         for line in lines: print(line)
     print(f"found {len(all_violations)} potential violation(s)")
