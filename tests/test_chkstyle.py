@@ -90,3 +90,83 @@ def test_chkstyle_allows_multiline_strings(tmp_path):
         ''',
     )
     assert chkstyle.check_file(str(path)) == []
+
+def test_chkstyle_allows_decorated_inner_defs(tmp_path):
+    path = _write(
+        tmp_path,
+        "decorators.py",
+        """
+        def dec(f): return f
+
+        def outer():
+            @dec
+            def inner(): return 1
+        """,
+    )
+    assert chkstyle.check_file(str(path)) == []
+
+def test_chkstyle_allows_multiline_string_calls(tmp_path):
+    path = _write(
+        tmp_path,
+        "multiline_call.py",
+        '''
+        def f():
+            return _lines("""
+            one
+            two
+            """)
+        ''',
+    )
+    assert chkstyle.check_file(str(path)) == []
+
+def test_chkstyle_allows_trailing_comments(tmp_path):
+    path = _write(
+        tmp_path,
+        "docments.py",
+        """
+        def ship_new(
+            name: str,              # Project name
+            package: str = None,    # Package name
+            force: bool = False,    # Overwrite existing
+        ):
+            return name
+
+        __all__ = [
+            "one",   # first
+            "two",   # second
+        ]
+        """,
+    )
+    assert chkstyle.check_file(str(path)) == []
+
+def test_chkstyle_if_else_single_statement(tmp_path):
+    path = _write(
+        tmp_path,
+        "if_else.py",
+        """
+        if branch == expected:
+            print(f"ok")
+        else:
+            print(f"not ok")
+        """,
+    )
+    msgs = _messages(chkstyle.check_file(str(path)))
+    assert "if single-statement body not one-liner" in msgs
+
+def test_chkstyle_main_accepts_file_path(tmp_path):
+    path = _write(tmp_path, "single.py", "x: int = 1\n")
+    ret = chkstyle.main(["chkstyle", str(path)])
+    assert ret == 1  # should find violation
+
+def test_chkstyle_allows_multiline_def_with_docments(tmp_path):
+    path = _write(
+        tmp_path,
+        "docment_def.py",
+        """
+        def ws_clone_cli(
+            repos_file: str = "repos.txt",  # File containing repo list
+            workers: int = 16,  # Number of parallel workers
+        ): ws_clone(repos_file, workers)
+        """,
+    )
+    assert chkstyle.check_file(str(path)) == []

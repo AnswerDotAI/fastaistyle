@@ -1,37 +1,41 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "fastaistyle"
 dynamic = ["version"]
 description = "Style checker for fast.ai coding conventions"
 readme = "README.md"
-license = "Apache-2.0"
 requires-python = ">=3.10"
-dependencies = ["tomli; python_version < '3.11'"]
-authors = [{name = "Jeremy Howard", email = "j@fast.ai"}]
+license = { text = "Apache-2.0" }
+authors = [{ name = "Jeremy Howard", email = "j@fast.ai" }]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+dependencies = ["tomli; python_version < '3.11'"]
+
+[project.optional-dependencies]
+dev = [
+  "fastship",
+  "build",
+  "twine",
 ]
 
 [project.scripts]
-chkstyle = "chkstyle:cli"
+chkstyle = "chkstyle.core:cli"
 
 [project.urls]
 Homepage = "https://github.com/AnswerDotAI/fastaistyle"
 
-[tool.hatch.build.targets.wheel]
-packages = ["."]
-only-include = ["chkstyle.py"]
-
-[tool.hatch.version]
-path = "chkstyle.py"
+[tool.setuptools.dynamic]
+version = { attr = "chkstyle.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
