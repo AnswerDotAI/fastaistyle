@@ -166,3 +166,34 @@ def test_chkstyle_iter_py_files_includes_notebooks(tmp_path):
     _write_nb(tmp_path, "t.ipynb", ["y = 2\n"])
     files = list(chkstyle.iter_py_files(str(tmp_path)))
     assert any(f.endswith(".py") for f in files) and any(f.endswith(".ipynb") for f in files)
+
+def test_chkstyle_if_with_multiline_else_still_flags_single_if_body(tmp_path):
+    "If body should be flagged even when else body is multi-line."
+    assert "if single-statement body not one-liner" in _msgs(_check_py(tmp_path, """
+        import os
+        def main():
+            root = '.'
+            if os.path.isfile(root):
+                print(root)
+            else:
+                a = 1
+                b = 2
+        """))
+
+def test_chkstyle_pragma_in_string_not_suppressed(tmp_path):
+    "Pragma strings in code (not comments) should not trigger suppression."
+    violations = _check_py(tmp_path, """
+        def check_pragma(line):
+            if "chkstyle: off" in line:
+                return True
+            return False
+        x: int = 1
+        """)
+    assert "lhs assignment annotation" in _msgs(violations), f"Got: {_msgs(violations)}"
+
+def test_chkstyle_core_py_no_violations():
+    "core.py should have no style violations."
+    import pathlib
+    core_path = pathlib.Path(__file__).parent.parent / "chkstyle" / "core.py"
+    violations = chkstyle.check_file(str(core_path))
+    assert violations == [], f"Unexpected violations in core.py: {[(l, m) for _, l, m, _ in violations]}"

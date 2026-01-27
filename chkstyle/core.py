@@ -198,10 +198,17 @@ def check_annotation(node, source: str, lines: list[str], path: str, violations:
         add_violation(violations, path, getattr(node, "lineno", 1), f"nested generics depth {depth}",
             node_lines(source, lines, node), suppressed)
 
+def _has_pragma(line, pragma):
+    "Check if line has pragma in a comment (after #)."
+    idx = line.find(pragma)
+    if idx == -1: return False
+    comment_idx = line.find('#')
+    return comment_idx != -1 and comment_idx < idx
+
 def should_skip_file(lines: list[str]) -> bool:
     "Skip file."
     head = lines[:5]
-    return any("chkstyle: skip" in line for line in head)
+    return any(_has_pragma(line, "chkstyle: skip") for line in head)
 
 def suppressed_lines(lines: list[str]) -> set[int]:
     "Suppressed lines."
@@ -210,17 +217,17 @@ def suppressed_lines(lines: list[str]) -> set[int]:
     ignore_next = False
     for lineno, line in enumerate(lines, start=1):
         stripped = line.strip()
-        if "chkstyle: on" in line:
+        if _has_pragma(line, "chkstyle: on"):
             off = False
             ignore_next = False
             continue
-        if "chkstyle: off" in line:
+        if _has_pragma(line, "chkstyle: off"):
             off = True
             ignore_next = False
             suppressed.add(lineno)
             continue
         if off: suppressed.add(lineno)
-        if "chkstyle: ignore" in line:
+        if _has_pragma(line, "chkstyle: ignore"):
             if stripped.startswith("#"): ignore_next = True
             else: suppressed.add(lineno)
         elif ignore_next and stripped and not stripped.startswith("#"):
@@ -337,8 +344,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--skip-folder-re", help="Regex to skip folders (must match whole name)")
     args = parser.parse_args(argv[1:])
     all_violations = []
-    if os.path.isfile(args.root):
-        all_violations.extend(check_path(args.root))
+    if os.path.isfile(args.root): all_violations.extend(check_path(args.root))
     else:
         cfg = load_config(args.root)
         skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
