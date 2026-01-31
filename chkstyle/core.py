@@ -4,6 +4,7 @@ except ImportError: import tomli as tomllib
 
 SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".venv", "venv", "dist", "build"}
 WRAP_WIDTH = 120
+MAX_LINE_LEN = 160
 COMPOUND_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.FunctionDef,
     ast.AsyncFunctionDef, ast.ClassDef)
 
@@ -244,7 +245,7 @@ def check_source(source: str, path: str) -> list[tuple]:
     violations = []
     suppressed = suppressed_lines(lines)
     for lineno, line in enumerate(lines, start=1):
-        if len(line) > 150: add_violation(violations, path, lineno, "line >150 chars", [line], suppressed)
+        if len(line) > MAX_LINE_LEN: add_violation(violations, path, lineno, f"line >{MAX_LINE_LEN} chars", [line], suppressed)
     try:
         for tok in tokenize.generate_tokens(io.StringIO(source).readline):
             if tok.type == tokenize.OP and tok.string == ";":
@@ -268,7 +269,7 @@ def check_source(source: str, path: str) -> list[tuple]:
             if "\n" in seg:
                 import_lines = node_lines(source, lines, node)
                 total_len = sum(len(line.strip()) for line in import_lines)
-                if total_len <= 150:
+                if total_len <= MAX_LINE_LEN:
                     add_violation(violations, path, node.lineno, "multi-line from-import", import_lines, suppressed)
         has_doc = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body
         if has_doc and is_docstring_stmt(node.body[0]):

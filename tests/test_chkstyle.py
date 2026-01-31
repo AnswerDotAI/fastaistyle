@@ -40,12 +40,12 @@ def test_chkstyle_reports_expected_violations(tmp_path):
             a=1,
             b=2,
         )
-        long = "......................................................................................................................................................."
+        long_variable_name_to_trigger_line_length_limit_because_line_is_super_long_and_should_fail_even_without_long_string_literal_or_repeated_dots_in_tests = "." * 170
         def g(x: list[list[int]]): return x
         '''))
     expected = {"single-line docstring uses triple quotes", "lhs assignment annotation",
         "dict literal with 3+ identifier keys", "semicolon statement separator", "multi-line from-import",
-        "if single-statement body not one-liner", "inefficient multiline expression", "line >150 chars",
+        "if single-statement body not one-liner", "inefficient multiline expression", "line >160 chars",
         "nested generics depth 2"}
     assert expected.issubset(msgs)
 

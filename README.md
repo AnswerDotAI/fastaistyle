@@ -162,8 +162,8 @@ from os import (
 from os import path, environ
 ```
 
-### `line >150 chars`
-Wrap at a natural boundary: argument lists, binary operators, or strings. But 150 is generous—aim for ~120 when practical.
+### `line >160 chars`
+Wrap at a natural boundary: argument lists, binary operators, or strings. 160 is the hard limit, but aim for ~140 (or ~120 when practical).
 
 ### `semicolon statement separator`
 Don't use `;` to combine statements. Use separate lines.
