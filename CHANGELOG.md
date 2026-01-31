@@ -2,6 +2,17 @@
 
 <!-- do not remove -->
 
+
+## 0.0.11
+
+### New Features
+
+- Reduce fussiness of line length ([#5](https://github.com/AnswerDotAI/fastaistyle/issues/5))
+### Bugs Squashed
+
+- Fix pragma detection in string literals ([#4](https://github.com/AnswerDotAI/fastaistyle/pull/4)), thanks to [@jph00](https://github.com/jph00)
+
+
 ## 0.0.10
 
 ### New Features
