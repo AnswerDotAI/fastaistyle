@@ -320,14 +320,14 @@ def check_notebook(path: str) -> list[tuple]:
     "Check Jupyter notebook for style violations."
     with open(path, encoding="utf-8") as f: nb = json.load(f)
     violations = []
-    for cell in nb.get("cells", []):
+    for idx, cell in enumerate(nb.get("cells", [])):
         if cell.get("cell_type") != "code": continue
         cell_id = cell.get("id", "unknown")
         source_lines = cell.get("source", [])
         if isinstance(source_lines, str): source = source_lines
         else: source = "".join(source_lines)
         if not source.strip(): continue
-        cell_path = f"{path}:cell[{cell_id}]"
+        cell_path = f"{path}:cell[{idx:03d}#{cell_id}]"
         cell_violations = check_source(source, cell_path)
         violations.extend(cell_violations)
     return violations
