@@ -135,7 +135,7 @@ def test_chkstyle_notebook_shows_cell_id_in_path(tmp_path):
     violations = _check_nb(tmp_path, ["x: int = 1\n"])
     assert len(violations) == 1
     vpath, lineno, msg, lines = violations[0]
-    assert ":cell[cell0]" in vpath and lineno == 1
+    assert ":cell[000#cell0]" in vpath and lineno == 1
 
 def test_chkstyle_notebook_shows_line_within_cell(tmp_path):
     violations = _check_nb(tmp_path, ["# ok\n# still ok\nx: int = 1\n"])
