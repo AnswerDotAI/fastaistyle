@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.0.13
+
+### New Features
+
+- Add skip-path support, fix hints, exempt string-heavy long lines ([#7](https://github.com/AnswerDotAI/fastaistyle/issues/7))
+
+
 ## 0.0.12
 
 ### New Features
