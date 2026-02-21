@@ -15,12 +15,38 @@ def load_config(root="."):
     with open(path, "rb") as f: data = tomllib.load(f)
     return data.get("tool", {}).get("chkstyle", {})
 
-def _skip(d, skip_re): return d in SKIP_DIRS or d.startswith(".") or (skip_re and skip_re.fullmatch(d))
+def _norm_relpath(path: str) -> str:
+    "Normalize a relative path for config matching."
+    norm = os.path.normpath(path).replace(os.sep, "/")
+    if norm == ".": return ""
+    return norm.removeprefix("./").strip("/")
 
-def iter_py_files(root: str, skip_re=None):
+def _parse_skip_paths(skip_paths) -> tuple[set, set]:
+    "Split skip paths into folder names and relative paths."
+    if not skip_paths: return set(), set()
+    if isinstance(skip_paths, str): skip_paths = [part.strip() for part in skip_paths.split(",")]
+    names, rel_paths = set(), set()
+    for item in skip_paths:
+        if not item: continue
+        path = _norm_relpath(str(item).strip())
+        if not path: continue
+        if "/" in path: rel_paths.add(path)
+        else: names.add(path)
+    return names, rel_paths
+
+def _skip(d, rel_path: str, skip_re, skip_names: set[str], skip_rel_paths: set[str]) -> bool:
+    "Check whether directory should be skipped."
+    if d in SKIP_DIRS or d.startswith("."): return True
+    if skip_re and skip_re.fullmatch(d): return True
+    if d in skip_names: return True
+    return any(rel_path == path or rel_path.startswith(f"{path}/") for path in skip_rel_paths)
+
+def iter_py_files(root: str, skip_re=None, skip_paths=None):
     "Iter py and ipynb files."
+    skip_names, skip_rel_paths = _parse_skip_paths(skip_paths)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [d for d in dirnames if not _skip(d, skip_re)]
+        rel_dir = _norm_relpath(os.path.relpath(dirpath, root))
+        dirnames[:] = [d for d in dirnames if not _skip(d, _norm_relpath(f"{rel_dir}/{d}"), skip_re, skip_names, skip_rel_paths)]
         for name in filenames:
             if not (name.endswith(".py") or name.endswith(".ipynb")): continue
             path = os.path.join(dirpath, name)
@@ -96,14 +122,19 @@ def add_violation(violations: list[tuple], path: str, lineno: int, msg: str, lin
     if lineno in suppressed: return
     violations.append((path, lineno, msg, lines))
 
+def with_hint(msg: str, hint: str | None = None) -> str:
+    "Attach optional fix hint to violation message."
+    if not hint: return msg
+    return f"{msg} (hint: {hint})"
+
 def check_single_line_docstring(source: str, lines: list[str], stmt, path: str, violations: list[tuple], suppressed: set[int]):
     "Check single-line docstring."
     doc = stmt.value.value
     if "\n" in doc: return
     seg = ast.get_source_segment(source, stmt) or ""
     if re.match(r'^[ \t]*[rRuUbBfF]*\"\"\"', seg):
-        add_violation(violations, path, stmt.lineno, "single-line docstring uses triple quotes",
-            node_lines(source, lines, stmt), suppressed)
+        msg = with_hint("single-line docstring uses triple quotes", "use single quotes or double quotes for one-line docstrings")
+        add_violation(violations, path, stmt.lineno, msg, node_lines(source, lines, stmt), suppressed)
 
 def check_suite(parent_kind: str, node, suite, path: str, source: str, lines: list[str], violations: list[tuple],
     suppressed: set[int]):
@@ -123,7 +154,8 @@ def check_suite(parent_kind: str, node, suite, path: str, source: str, lines: li
     if total_len is not None and total_len > 130: return
     header_line = lines[header_lineno - 1].rstrip("\n")
     body_line = lines[stmt.lineno - 1].rstrip("\n")
-    add_violation(violations, path, header_lineno, f"{parent_kind} single-statement body not one-liner",
+    add_violation(violations, path, header_lineno, with_hint(f"{parent_kind} single-statement body not one-liner",
+        "put the simple body statement on the header line if it still reads clearly"),
         [header_line] if header_lineno == stmt.lineno else [header_line, body_line], suppressed)
 
 def check_multiline_sig(node, lines: list[str], path: str, violations: list[tuple], suppressed: set[int]):
@@ -138,27 +170,27 @@ def check_multiline_sig(node, lines: list[str], path: str, violations: list[tupl
     if any(line.lstrip().startswith("@") for line in seg_lines[1:]): return
     indent = first_line_indent(lines, start)
     if not is_inefficient_multiline(seg_lines, indent): return
-    add_violation(violations, path, start, "inefficient multiline signature/header", seg_lines, suppressed)
+    add_violation(violations, path, start, with_hint("inefficient multiline signature/header",
+        "condense to fewer lines; avoid leaving `(`, `dict(`, or `{` on their own line"), seg_lines, suppressed)
 
-def _is_multiline_str(node) -> bool:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str): return "\n" in node.value
-    if isinstance(node, ast.JoinedStr): return any(isinstance(v, ast.Constant) and "\n" in str(v.value) for v in node.values)
+def _contains_multiline_str(node) -> bool:
+    "Check if node or any descendant is a multiline string."
+    for n in ast.walk(node):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and "\n" in n.value: return True
+        if isinstance(n, ast.JoinedStr) and any(isinstance(v, ast.Constant) and "\n" in str(v.value) for v in n.values): return True
     return False
 
 def check_multiline_expr(node, source: str, lines: list[str], path: str, violations: list[tuple], suppressed: set[int]):
     "Check multiline expression layout."
     if not node: return
     if getattr(node, "end_lineno", node.lineno) <= node.lineno: return
-    if isinstance(node, ast.Constant) and isinstance(node.value, str): return
-    if isinstance(node, ast.JoinedStr): return
-    if isinstance(node, ast.Call):
-        args = list(node.args) + [kw.value for kw in node.keywords]
-        if any(_is_multiline_str(arg) for arg in args): return
+    if _contains_multiline_str(node): return
     seg_lines = segment_lines(source, node)
     if not seg_lines or len(seg_lines) <= 1: return
     indent = first_line_indent(lines, node.lineno)
     if not is_inefficient_multiline(seg_lines, indent): return
-    add_violation(violations, path, node.lineno, "inefficient multiline expression", seg_lines, suppressed)
+    add_violation(violations, path, node.lineno, with_hint("inefficient multiline expression",
+        "condense to fewer lines; avoid leaving `(`, `dict(`, or `{` on their own line"), seg_lines, suppressed)
 
 def max_subscript_depth(node, depth: int = 0) -> int:
     "Max subscript depth."
@@ -176,12 +208,20 @@ def is_dataclass_decorator(dec) -> bool:
     if isinstance(dec, ast.Call): return is_dataclass_decorator(dec.func)
     return False
 
+def _is_basemodel_subclass(node) -> bool:
+    "Check if class inherits from BaseModel."
+    for base in node.bases:
+        if isinstance(base, ast.Name) and base.id == "BaseModel": return True
+        if isinstance(base, ast.Attribute) and base.attr == "BaseModel": return True
+    return False
+
 def dataclass_annassigns(tree) -> set:
-    "Dataclass annassigns."
+    "Dataclass and BaseModel annassigns."
     annassigns = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef): continue
-        if not any(is_dataclass_decorator(dec) for dec in node.decorator_list): continue
+        is_dataclass = any(is_dataclass_decorator(dec) for dec in node.decorator_list)
+        if not is_dataclass and not _is_basemodel_subclass(node): continue
         for stmt in node.body:
             if isinstance(stmt, ast.AnnAssign): annassigns.add(stmt)
     return annassigns
@@ -193,11 +233,12 @@ def check_annotation(node, source: str, lines: list[str], path: str, violations:
         seg_lines = segment_lines(source, node)
         indent = first_line_indent(lines, node.lineno)
         if is_inefficient_multiline(seg_lines, indent):
-            add_violation(violations, path, node.lineno, "inefficient multiline annotation", seg_lines, suppressed)
+            add_violation(violations, path, node.lineno, with_hint("inefficient multiline annotation",
+                "condense to fewer lines or extract part of the type into a named alias"), seg_lines, suppressed)
     depth = max_subscript_depth(node)
     if depth >= 2:
-        add_violation(violations, path, getattr(node, "lineno", 1), f"nested generics depth {depth}",
-            node_lines(source, lines, node), suppressed)
+        msg = with_hint(f"nested generics depth {depth}", "simplify or alias nested parts; less precise is fine if still correct")
+        add_violation(violations, path, getattr(node, "lineno", 1), msg, node_lines(source, lines, node), suppressed)
 
 def _has_pragma(line, pragma):
     "Check if line has pragma in a comment (after #)."
@@ -205,6 +246,36 @@ def _has_pragma(line, pragma):
     if idx == -1: return False
     comment_idx = line.find('#')
     return comment_idx != -1 and comment_idx < idx
+
+def string_token_spans(source: str, lines: list[str]) -> dict:
+    "Return line->column spans covered by string tokens."
+    spans = {}
+    try: tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    except tokenize.TokenError: return spans
+    for tok in tokens:
+        if tok.type != tokenize.STRING: continue
+        srow, scol = tok.start
+        erow, ecol = tok.end
+        if not (1 <= srow <= len(lines) and 1 <= erow <= len(lines)): continue
+        if srow == erow:
+            spans.setdefault(srow, []).append((scol, ecol))
+            continue
+        spans.setdefault(srow, []).append((scol, len(lines[srow - 1])))
+        for row in range(srow + 1, erow): spans.setdefault(row, []).append((0, len(lines[row - 1])))
+        spans.setdefault(erow, []).append((0, ecol))
+    return spans
+
+def line_len_without_spans(line: str, spans: list[tuple]) -> int:
+    "Length after removing span ranges from a line."
+    if not spans: return len(line)
+    merged = []
+    for start, end in sorted(spans):
+        start, end = max(0, min(start, len(line))), max(0, min(end, len(line)))
+        if start > end: start, end = end, start
+        if not merged or start > merged[-1][1]: merged.append([start, end])
+        else: merged[-1][1] = max(merged[-1][1], end)
+    removed = sum(end - start for start, end in merged)
+    return len(line) - removed
 
 def should_skip_file(lines: list[str]) -> bool:
     "Skip file."
@@ -244,24 +315,31 @@ def check_source(source: str, path: str) -> list[tuple]:
     except SyntaxError as e: return [(path, e.lineno or 1, f"syntax error: {e.msg}", [])]
     violations = []
     suppressed = suppressed_lines(lines)
+    str_spans = string_token_spans(source, lines)
     for lineno, line in enumerate(lines, start=1):
-        if len(line) > MAX_LINE_LEN: add_violation(violations, path, lineno, f"line >{MAX_LINE_LEN} chars", [line], suppressed)
+        if len(line) <= MAX_LINE_LEN: continue
+        if line_len_without_spans(line, str_spans.get(lineno, [])) <= MAX_LINE_LEN: continue
+        hint = "wrap at a natural boundary (args/operators); if reformatted literals got taller, avoid lonely `dict(`/`{` lines"
+        add_violation(violations, path, lineno, with_hint(f"line >{MAX_LINE_LEN} chars", hint), [line], suppressed)
     try:
         for tok in tokenize.generate_tokens(io.StringIO(source).readline):
             if tok.type == tokenize.OP and tok.string == ";":
                 lineno = tok.start[0]
-                add_violation(violations, path, lineno, "semicolon statement separator", [lines[lineno - 1]], suppressed)
+                if lines[lineno - 1].lstrip().startswith("class "): continue
+                add_violation(violations, path, lineno, with_hint("semicolon statement separator",
+                    "split into separate statements on separate lines"), [lines[lineno - 1]], suppressed)
     except tokenize.TokenError: pass
     if tree.body and is_docstring_stmt(tree.body[0]):
         check_single_line_docstring(source, lines, tree.body[0], path, violations, suppressed)
     dataclass_fields = dataclass_annassigns(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict) and len(node.keys) >= 3 and all(is_identifier_str(k) for k in node.keys):
-            add_violation(violations, path, node.lineno, "dict literal with 3+ identifier keys",
-                node_lines(source, lines, node), suppressed)
+            msg = with_hint("dict literal with 3+ identifier keys", "prefer dict(a=a, b=b, c=c) when keys are identifiers")
+            add_violation(violations, path, node.lineno, msg, node_lines(source, lines, node), suppressed)
         if isinstance(node, ast.AnnAssign):
             if node not in dataclass_fields:
-                add_violation(violations, path, node.lineno, "lhs assignment annotation", node_lines(source, lines, node), suppressed)
+                msg = with_hint("lhs assignment annotation", "move the type hint to function signatures; keep plain assignments in normal code")
+                add_violation(violations, path, node.lineno, msg, node_lines(source, lines, node), suppressed)
             check_multiline_expr(node.value, source, lines, path, violations, suppressed)
             check_annotation(node.annotation, source, lines, path, violations, suppressed)
         if isinstance(node, ast.ImportFrom):
@@ -270,7 +348,8 @@ def check_source(source: str, path: str) -> list[tuple]:
                 import_lines = node_lines(source, lines, node)
                 total_len = sum(len(line.strip()) for line in import_lines)
                 if total_len <= MAX_LINE_LEN:
-                    add_violation(violations, path, node.lineno, "multi-line from-import", import_lines, suppressed)
+                    add_violation(violations, path, node.lineno, with_hint("multi-line from-import",
+                        "use a single-line import when it fits"), import_lines, suppressed)
         has_doc = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body
         if has_doc and is_docstring_stmt(node.body[0]):
             check_single_line_docstring(source, lines, node.body[0], path, violations, suppressed)
@@ -337,24 +416,46 @@ def check_path(path: str) -> list[tuple]:
     if path.endswith(".ipynb"): return check_notebook(path)
     return check_file(path)
 
+def _cfg_root(paths: list[str]) -> str:
+    "Choose config root; preserve old behavior for single directory."
+    return paths[0] if len(paths) == 1 and os.path.isdir(paths[0]) else "."
+
+def _cfg_skip_paths(cfg: dict) -> list[str]:
+    "Load skip_paths from config."
+    return cfg.get("skip_paths") or cfg.get("skip-paths") or []
+
 def main(argv: list[str]) -> int:
     "Main."
     import argparse
     parser = argparse.ArgumentParser(description="Check Python files for style violations")
-    parser.add_argument("root", nargs="?", default=".", help="Root directory or file to check")
+    parser.add_argument("paths", nargs="*", default=["."], help="Files and/or directories to check")
     parser.add_argument("--skip-folder-re", help="Regex to skip folders (must match whole name)")
+    parser.add_argument("--skip-path", action="append", default=None, help="Folder name/path to skip (repeatable)")
     args = parser.parse_args(argv[1:])
+    cfg = load_config(_cfg_root(args.paths))
+    skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
+    skip_re = re.compile(skip_pattern) if skip_pattern else None
+    skip_paths = args.skip_path if args.skip_path is not None else _cfg_skip_paths(cfg)
     all_violations = []
-    if os.path.isfile(args.root): all_violations.extend(check_path(args.root))
-    else:
-        cfg = load_config(args.root)
-        skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
-        skip_re = re.compile(skip_pattern) if skip_pattern else None
-        for path in iter_py_files(args.root, skip_re): all_violations.extend(check_path(path))
+    seen = set()
+    for root in args.paths:
+        if os.path.isfile(root):
+            if root in seen: continue
+            all_violations.extend(check_path(root))
+            seen.add(root)
+            continue
+        for path in iter_py_files(root, skip_re, skip_paths):
+            if path in seen: continue
+            all_violations.extend(check_path(path))
+            seen.add(path)
     for path, lineno, msg, lines in sorted(all_violations, key=lambda item: (item[0], item[1], item[2])):
         print(f"# {path}:{lineno}: {msg}")
         for line in lines: print(line)
     print(f"found {len(all_violations)} potential violation(s)")
+    if all_violations:
+        print("Style guidance: fix violations in the spirit of the fast.ai style guide.")
+        print("Aim for code that is elegant, readable, and concise, not merely checker-compliant.")
+        print("Never apply a change that satisfies chkstyle but makes the code less clear.")
     return 1 if all_violations else 0
 
 def cli(): raise SystemExit(main(sys.argv))

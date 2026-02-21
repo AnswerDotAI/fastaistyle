@@ -81,12 +81,23 @@ Check a specific path:
 chkstyle path/to/code/
 ```
 
+Check multiple files/folders in one run:
+```bash
+chkstyle path/to/code tests unit.py
+```
+
 Skip folders matching a regex (must match the whole folder name):
 ```bash
 chkstyle --skip-folder-re 'test.*|migrations|vendor'
 ```
 
-The checker prints violations with file paths, line numbers, and the offending code.
+Skip specific folders by name/path (repeatable):
+```bash
+chkstyle --skip-path vendor --skip-path src/generated
+```
+
+The checker prints violations with file paths, line numbers, the offending code, and a short fix hint.
+When violations are found, it also prints a reminder to prioritize clarity and match the spirit of the style guide.
 
 ### Jupyter Notebook Support
 
@@ -104,6 +115,7 @@ Configure `chkstyle` in your `pyproject.toml`:
 ```toml
 [tool.chkstyle]
 skip-folder-re = "test.*|migrations|vendor"
+skip_paths = ["vendor", "src/generated"]
 ```
 
 Command-line arguments override config file settings.
@@ -164,6 +176,7 @@ from os import path, environ
 
 ### `line >160 chars`
 Wrap at a natural boundary: argument lists, binary operators, or strings. 160 is the hard limit, but aim for ~140 (or ~120 when practical).
+Long lines are only exempt when the extra width mainly comes from string literal content.
 
 ### `semicolon statement separator`
 Don't use `;` to combine statements. Use separate lines.
@@ -236,6 +249,8 @@ carefully_formatted = {
 ```bash
 pytest
 ```
+
+There are currently no tests marked `slow`; running `pytest -m slow` selects 0 tests.
 
 ## Development
 
