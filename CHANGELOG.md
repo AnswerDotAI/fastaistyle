@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.0.14
+
+### New Features
+
+- Add checks for consecutive short imports, standalone closers, and continuation line indents ([#8](https://github.com/AnswerDotAI/fastaistyle/issues/8))
+
+
 ## 0.0.13
 
 ### New Features
