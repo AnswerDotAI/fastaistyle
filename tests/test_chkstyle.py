@@ -113,8 +113,7 @@ def test_chkstyle_allows_trailing_comments(tmp_path):
 
         __all__ = [
             "one",   # first
-            "two",   # second
-        ]
+            "two"]   # second
         """) == []
 
 def test_chkstyle_if_else_single_statement(tmp_path):
@@ -170,6 +169,31 @@ def test_chkstyle_allows_multiline_def_with_docments(tmp_path):
             workers: int = 16,  # Number of parallel workers
         ): ws_clone(repos_file, workers)
         """) == []
+
+def test_chkstyle_flags_consecutive_short_imports(tmp_path):
+    msgs = _msgs(_check_py(tmp_path, """
+        import os
+        import sys
+        import pathlib
+        """))
+    assert _has_msg(msgs, "consecutive short imports"), msgs
+
+def test_chkstyle_flags_closing_bracket_on_own_line(tmp_path):
+    msgs = _msgs(_check_py(tmp_path, """
+        result = some_really_long_function_name_for_testing_closer_layout(
+            alpha_parameter_name=first_value_identifier,
+            beta_parameter_name=second_value_identifier,
+        )
+        """))
+    assert _has_msg(msgs, "closing bracket on its own line"), msgs
+
+def test_chkstyle_flags_continuation_indent(tmp_path):
+    msgs = _msgs(_check_py(tmp_path, """
+        result = some_really_long_function_name_for_testing_indent_layout(
+                alpha_parameter_name=first_value_identifier,
+                beta_parameter_name=second_value_identifier)
+        """))
+    assert _has_msg(msgs, "continuation line indent"), msgs
 
 def test_chkstyle_notebook_reports_violations(tmp_path):
     msgs = _msgs(_check_nb(tmp_path, ["x: int = 1\ndata = {'a': 1, 'b': 2, 'c': 3}\n"]))

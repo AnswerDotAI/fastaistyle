@@ -174,6 +174,50 @@ from os import (
 from os import path, environ
 ```
 
+### `consecutive short imports`
+If you have a run of short `import foo` lines, combine them.
+
+```python
+# Bad
+import os
+import sys
+import pathlib
+
+# Good
+import os, sys, pathlib
+```
+
+### `closing bracket on its own line`
+Don't leave a bare closing `)`, `]`, or `}` on a line by itself.
+
+```python
+# Bad
+items = [
+    one,
+    two,
+]
+
+# Good
+items = [
+    one,
+    two]
+```
+
+### `continuation line indent`
+Continuation lines should be indented exactly 4 spaces beyond the line that opened the block.
+
+```python
+# Bad
+result = call(
+        first_arg,
+        second_arg)
+
+# Good
+result = call(
+    first_arg,
+    second_arg)
+```
+
 ### `line >160 chars`
 Wrap at a natural boundary: argument lists, binary operators, or strings. 160 is the hard limit, but aim for ~140 (or ~120 when practical).
 Long lines are only exempt when the extra width mainly comes from string literal content.

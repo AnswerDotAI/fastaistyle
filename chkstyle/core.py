@@ -91,6 +91,10 @@ def _has_trailing_comment(line: str) -> bool:
     if not stripped or stripped.startswith('#'): return False
     return '#' in stripped
 
+def line_indent(line: str) -> int:
+    "Line indent."
+    return len(line) - len(line.lstrip())
+
 def is_inefficient_multiline(seg_lines: list[str], indent: int) -> bool:
     "Inefficient multiline."
     if len(seg_lines) <= 1: return False
@@ -265,6 +269,91 @@ def string_token_spans(source: str, lines: list[str]) -> dict:
         spans.setdefault(erow, []).append((0, ecol))
     return spans
 
+def token_line_infos(source: str) -> dict:
+    "Return line start bracket stack and code tokens."
+    infos, stack = {}, []
+    try: tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    except tokenize.TokenError: return infos
+    skip = {tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.COMMENT, tokenize.ENDMARKER}
+    for tok in tokens:
+        row = tok.start[0]
+        info = infos.setdefault(row, {"stack": tuple(stack), "tokens": []})
+        if tok.type in skip: continue
+        info["tokens"].append(tok)
+        if tok.type == tokenize.OP and tok.string in "([{": stack.append(row)
+        elif tok.type == tokenize.OP and tok.string in ")]}" and stack: stack.pop()
+    return infos
+
+def _is_short_single_import(node, lines: list[str]) -> bool:
+    "Check if node is a short single-module import."
+    if not isinstance(node, ast.Import): return False
+    if getattr(node, "end_lineno", node.lineno) != node.lineno or len(node.names) != 1: return False
+    line = lines[node.lineno - 1].rstrip("\n")
+    if not line.strip().startswith("import "): return False
+    return len(line) < 50 and not _has_trailing_comment(line)
+
+def _combined_import_len(nodes: list, lines: list[str]) -> int:
+    "Combined length for a run of import statements."
+    indent = first_line_indent(lines, nodes[0].lineno)
+    names = ", ".join(lines[node.lineno - 1].strip().removeprefix("import ").strip() for node in nodes)
+    return indent + len("import ") + len(names)
+
+def check_short_import_runs(tree, lines: list[str], path: str, violations: list[tuple], suppressed: set[int]):
+    "Check consecutive short imports."
+    imports = sorted((node for node in ast.walk(tree) if isinstance(node, ast.Import)),
+        key=lambda node: (node.lineno, getattr(node, "end_lineno", node.lineno)))
+    run = []
+    def flush():
+        if len(run) < 2: return
+        import_lines = [lines[node.lineno - 1].rstrip("\n") for node in run]
+        add_violation(violations, path, run[0].lineno, with_hint("consecutive short imports",
+            "combine consecutive short imports onto one line: `import a, b`"), import_lines, suppressed)
+    for node in imports:
+        if not _is_short_single_import(node, lines):
+            flush()
+            run = []
+            continue
+        if not run:
+            run = [node]
+            continue
+        prev = run[-1]
+        same_indent = first_line_indent(lines, node.lineno) == first_line_indent(lines, prev.lineno)
+        if node.lineno != getattr(prev, "end_lineno", prev.lineno) + 1 or not same_indent:
+            flush()
+            run = [node]
+            continue
+        cand = run + [node]
+        if _combined_import_len(cand, lines) > MAX_LINE_LEN:
+            flush()
+            run = [node]
+            continue
+        run = cand
+    flush()
+
+def check_standalone_closers(line_infos: dict, lines: list[str], path: str, violations: list[tuple], suppressed: set[int]):
+    "Check closers on their own line."
+    for lineno, info in sorted(line_infos.items()):
+        toks = info["tokens"]
+        if len(toks) != 1: continue
+        tok = toks[0]
+        text = lines[lineno - 1].split("#", 1)[0].strip()
+        if text != tok.string: continue
+        if tok.type != tokenize.OP or tok.string not in ")]}" or not info["stack"]: continue
+        add_violation(violations, path, lineno, with_hint("closing bracket on its own line",
+            "move `)`, `]`, or `}` to the end of the previous content line"), [lines[lineno - 1]], suppressed)
+
+def check_continuation_indents(line_infos: dict, lines: list[str], path: str, violations: list[tuple], suppressed: set[int]):
+    "Check continuation indentation."
+    for lineno, info in sorted(line_infos.items()):
+        if not info["stack"] or not info["tokens"]: continue
+        first = info["tokens"][0]
+        if first.type == tokenize.OP and first.string in ")]}": continue
+        expected = first_line_indent(lines, info["stack"][-1]) + 4
+        actual = line_indent(lines[lineno - 1])
+        if actual == expected: continue
+        hint = "indent continuation lines exactly 4 spaces beyond the line that opened the block"
+        add_violation(violations, path, lineno, with_hint("continuation line indent", hint), [lines[lineno - 1]], suppressed)
+
 def line_len_without_spans(line: str, spans: list[tuple]) -> int:
     "Length after removing span ranges from a line."
     if not spans: return len(line)
@@ -316,6 +405,10 @@ def check_source(source: str, path: str) -> list[tuple]:
     violations = []
     suppressed = suppressed_lines(lines)
     str_spans = string_token_spans(source, lines)
+    line_infos = token_line_infos(source)
+    check_short_import_runs(tree, lines, path, violations, suppressed)
+    check_standalone_closers(line_infos, lines, path, violations, suppressed)
+    check_continuation_indents(line_infos, lines, path, violations, suppressed)
     for lineno, line in enumerate(lines, start=1):
         if len(line) <= MAX_LINE_LEN: continue
         if line_len_without_spans(line, str_spans.get(lineno, [])) <= MAX_LINE_LEN: continue

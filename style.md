@@ -16,11 +16,13 @@ Keep the code compact, readable, and consistent with the surrounding file. Prefe
 - Be frugal with vertical whitespace.
 - Avoid nearly all comments, unless really required to explain an otherwise-obscure issue.  
 - Indent with 4 spaces; avoid trailing whitespace.  
+- Indent continuation lines 4 spaces beyond the line that opened the block; don't add extra hanging indent.  
+- Keep a standalone `)`, `]`, or `}` off its own line; attach it to the end of the previous content line.  
 - Avoid auto-formatters that rewrite layout.  
 - Group imports; multiple modules on one line is preferred.  
   - Good: `import json, os, time`  
   - Bad: `import json\nimport os\nimport time`  
-  - Good: `from mymod import (\n    a,\n    b\n)`
+  - Good: `from mymod import (\n    a,\n    b)`
   - Bad: `from mymod import a,b`
 
 ## Naming
