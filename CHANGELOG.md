@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.0.15
+
+### New Features
+
+- Add unused import detection for Python files and notebooks with nbdev export-cell awareness ([#9](https://github.com/AnswerDotAI/fastaistyle/issues/9))
+
+
 ## 0.0.14
 
 ### New Features
