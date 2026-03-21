@@ -1,10 +1,11 @@
-import ast, io, json, math, os, re, sys, tokenize
+import ast, io, json, math, os, re, symtable, sys, tokenize
 try: import tomllib
 except ImportError: import tomli as tomllib
 
 SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".venv", "venv", "dist", "build"}
 WRAP_WIDTH = 120
 MAX_LINE_LEN = 160
+NB_EXPORT_RE = re.compile(r"^\s*#\|\s*exports?\b", re.M)
 COMPOUND_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.FunctionDef,
     ast.AsyncFunctionDef, ast.ClassDef)
 
@@ -284,6 +285,237 @@ def token_line_infos(source: str) -> dict:
         elif tok.type == tokenize.OP and tok.string in ")]}" and stack: stack.pop()
     return infos
 
+def _sym_scope_kind(tab) -> str:
+    "Normalize symtable scope kinds."
+    kind = tab.get_type()
+    return "lambda" if kind == "function" and tab.get_name() == "lambda" else kind
+
+def _scope_key(kind: str, name: str, lineno: int) -> tuple[str, str, int]:
+    "Stable scope key for AST/symtable matching."
+    return kind, name, lineno
+
+def _scope_bindings(tab) -> set[str]:
+    "Names bound in a scope."
+    return {sym.get_name() for sym in tab.get_symbols() if sym.is_local() or sym.is_imported() or sym.is_parameter() or sym.is_assigned()
+        or sym.is_namespace()}
+
+def _scope_globals(tab) -> set[str]:
+    "Explicit global declarations in a scope."
+    return {sym.get_name() for sym in tab.get_symbols() if hasattr(sym, "is_declared_global") and sym.is_declared_global()}
+
+def _scope_nonlocals(tab) -> set[str]:
+    "Explicit nonlocal declarations in a scope."
+    return {sym.get_name() for sym in tab.get_symbols() if sym.is_nonlocal()}
+
+def _build_scope_tree(tab, parent=None):
+    "Build scope metadata tree from symtable."
+    info = dict(kind=_sym_scope_kind(tab), name=tab.get_name(), lineno=tab.get_lineno(), parent=parent, bindings=_scope_bindings(tab),
+        globals=_scope_globals(tab), nonlocals=_scope_nonlocals(tab), imports=[], used=set(), free=set(), children={}, kids=[])
+    for child in tab.get_children():
+        child_info = _build_scope_tree(child, info)
+        info["kids"].append(child_info)
+        info["children"].setdefault(_scope_key(child_info["kind"], child_info["name"], child_info["lineno"]), []).append(child_info)
+    return info
+
+def _root_scope(scope):
+    "Root/module scope."
+    while scope["parent"] is not None: scope = scope["parent"]
+    return scope
+
+def _next_closure_scope(scope):
+    "Next enclosing closure scope, skipping class scopes."
+    scope = scope["parent"]
+    while scope is not None and scope["kind"] == "class": scope = scope["parent"]
+    return scope
+
+def _resolve_nonlocal(scope, name: str):
+    "Resolve a nonlocal binding."
+    scope = _next_closure_scope(scope)
+    while scope is not None and scope["kind"] != "module":
+        if name in scope["bindings"]: return scope
+        scope = _next_closure_scope(scope)
+    return None
+
+def _resolve_name(scope, name: str):
+    "Resolve a load name to the scope that binds it."
+    start,cur = scope,scope
+    while cur is not None:
+        if cur["kind"] in {"function", "lambda", "comp"}:
+            if name in cur["globals"]: return _root_scope(cur)
+            if name in cur["nonlocals"]: return _resolve_nonlocal(cur, name)
+            if name in cur["bindings"]: return cur
+            cur = _next_closure_scope(cur)
+            continue
+        if cur["kind"] == "class":
+            if cur is start and name in cur["bindings"]: return cur
+            cur = cur["parent"]
+            continue
+        return cur if name in cur["bindings"] else None
+    return None
+
+def _bind_names(node, names: set[str]):
+    "Collect bound names from a target."
+    if isinstance(node, ast.Name): names.add(node.id)
+    elif isinstance(node, (ast.List, ast.Tuple)):
+        for o in node.elts: _bind_names(o, names)
+    elif isinstance(node, ast.Starred): _bind_names(node.value, names)
+
+def _literal_strs(node):
+    "Extract literal string names from __all__-like expressions."
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        if not all(isinstance(o, ast.Constant) and isinstance(o.value, str) for o in node.elts): return None
+        return [o.value for o in node.elts]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left,right = _literal_strs(node.left),_literal_strs(node.right)
+        return None if left is None or right is None else left + right
+    return None
+
+def exported_names(tree) -> set[str]:
+    "Names exported through a simple static __all__."
+    res = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+            if vals := _literal_strs(node.value): res.update(vals)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and node.target.id == "__all__" and isinstance(node.op, ast.Add):
+            if vals := _literal_strs(node.value): res.update(vals)
+    return res
+
+def _import_name(alias, from_import: bool=False) -> str:
+    "Bound name for an import alias."
+    if alias.asname: return alias.asname
+    return alias.name if from_import else alias.name.split(".", 1)[0]
+
+def _base_path(path: str) -> str:
+    "Notebook cell paths include a cell suffix."
+    return path.split(":cell[", 1)[0]
+
+class _UnusedImportVisitor(ast.NodeVisitor):
+    "Track imported names that are referenced."
+    def __init__(self, scope): self.scope = scope
+
+    def _child_scope(self, kind: str, name: str, lineno: int):
+        kids = self.scope["children"].get(_scope_key(kind, name, lineno), [])
+        if kids: return kids.pop(0)
+        return dict(kind=kind, name=name, lineno=lineno, parent=self.scope, bindings=set(), globals=set(), nonlocals=set(),
+            imports=[], used=set(), free=set(), children={}, kids=[])
+
+    def _visit_args(self, args):
+        for o in args.defaults:
+            if o is not None: self.visit(o)
+        for o in args.kw_defaults:
+            if o is not None: self.visit(o)
+        for arg in args.posonlyargs + args.args + args.kwonlyargs:
+            if arg.annotation is not None: self.visit(arg.annotation)
+        if args.vararg and args.vararg.annotation is not None: self.visit(args.vararg.annotation)
+        if args.kwarg and args.kwarg.annotation is not None: self.visit(args.kwarg.annotation)
+
+    def _push(self, scope):
+        old,self.scope = self.scope,scope
+        return old
+
+    def _pop(self, old): self.scope = old
+
+    def _visit_function(self, node, kind: str):
+        for o in node.decorator_list: self.visit(o)
+        self._visit_args(node.args)
+        if getattr(node, "returns", None) is not None: self.visit(node.returns)
+        old = self._push(self._child_scope(kind, node.name, node.lineno))
+        for stmt in node.body: self.visit(stmt)
+        self._pop(old)
+
+    def _visit_comp(self, node, *parts):
+        if not node.generators:
+            for o in parts: self.visit(o)
+            return
+        first = node.generators[0]
+        self.visit(first.iter)
+        comp = dict(kind="comp", name="comp", lineno=node.lineno, parent=self.scope, bindings=set(), globals=set(), nonlocals=set(),
+            imports=[], used=set(), free=set(), children={}, kids=[])
+        old = self._push(comp)
+        _bind_names(first.target, comp["bindings"])
+        for o in first.ifs: self.visit(o)
+        for gen in node.generators[1:]:
+            self.visit(gen.iter)
+            _bind_names(gen.target, comp["bindings"])
+            for o in gen.ifs: self.visit(o)
+        for o in parts: self.visit(o)
+        self._pop(old)
+
+    def visit_Import(self, node): self.scope["imports"].append((node, [_import_name(o) for o in node.names]))
+
+    def visit_ImportFrom(self, node):
+        if node.module == "__future__": return
+        names = [_import_name(o, from_import=True) for o in node.names if o.name != "*"]
+        if names: self.scope["imports"].append((node, names))
+
+    def visit_Name(self, node):
+        if not isinstance(node.ctx, ast.Load): return
+        scope = _resolve_name(self.scope, node.id)
+        if scope and node.id in scope["bindings"]:
+            if any(name == node.id for _node,names in scope["imports"] for name in names): scope["used"].add(node.id)
+            return
+        self.scope["free"].add(node.id)
+
+    def visit_FunctionDef(self, node): self._visit_function(node, "function")
+    def visit_AsyncFunctionDef(self, node): self._visit_function(node, "function")
+
+    def visit_ClassDef(self, node):
+        for o in node.decorator_list: self.visit(o)
+        for o in node.bases: self.visit(o)
+        for o in node.keywords: self.visit(o)
+        old = self._push(self._child_scope("class", node.name, node.lineno))
+        for stmt in node.body: self.visit(stmt)
+        self._pop(old)
+
+    def visit_Lambda(self, node):
+        self._visit_args(node.args)
+        old = self._push(self._child_scope("lambda", "lambda", node.lineno))
+        self.visit(node.body)
+        self._pop(old)
+
+    def visit_ListComp(self, node): self._visit_comp(node, node.elt)
+    def visit_SetComp(self, node): self._visit_comp(node, node.elt)
+    def visit_GeneratorExp(self, node): self._visit_comp(node, node.elt)
+    def visit_DictComp(self, node): self._visit_comp(node, node.key, node.value)
+
+def _analyze_usage(source: str, tree, path: str):
+    "Build scope tree populated with import and free-name usage."
+    root = _build_scope_tree(symtable.symtable(source, _base_path(path), "exec"))
+    _UnusedImportVisitor(root).visit(tree)
+    return root
+
+def _collect_scope_names(scope, key: str) -> set[str]:
+    "Collect a set-valued field from a scope tree."
+    names = set(scope[key])
+    for child in scope["kids"]: names.update(_collect_scope_names(child, key))
+    return names
+
+def _unused_import_items(scope, exports: set[str], items: list[tuple]):
+    "Collect unused imports from a scope tree."
+    keep = exports if scope["kind"] == "module" else set()
+    for node,names in scope["imports"]:
+        unused = [name for name in names if name not in scope["used"] and name not in keep]
+        if unused: items.append((node, unused, scope["kind"]))
+    for child in scope["kids"]: _unused_import_items(child, exports, items)
+
+def unused_import_items(source: str, tree, path: str) -> list[tuple]:
+    "Return unused import items, excluding package __init__.py re-export patterns."
+    if os.path.basename(_base_path(path)) == "__init__.py": return []
+    items = []
+    _unused_import_items(_analyze_usage(source, tree, path), exported_names(tree), items)
+    return items
+
+def free_load_names(source: str, tree, path: str) -> set[str]:
+    "Return unresolved loaded names."
+    return _collect_scope_names(_analyze_usage(source, tree, path), "free")
+
+def check_unused_imports(source: str, tree, lines: list[str], path: str, violations: list[tuple], suppressed: set[int]):
+    "Check for unused imports, excluding package __init__.py re-export patterns."
+    hint = "remove unused imports; re-exports belong in `__all__` or package `__init__.py`"
+    for node,unused,_kind in unused_import_items(source, tree, path):
+        msg = with_hint(f"unused import: {', '.join(unused)}", hint)
+        add_violation(violations, path, node.lineno, msg, node_lines(source, lines, node), suppressed)
+
 def _is_short_single_import(node, lines: list[str]) -> bool:
     "Check if node is a short single-module import."
     if not isinstance(node, ast.Import): return False
@@ -396,7 +628,7 @@ def suppressed_lines(lines: list[str]) -> set[int]:
             ignore_next = False
     return suppressed
 
-def check_source(source: str, path: str) -> list[tuple]:
+def check_source(source: str, path: str, check_unused: bool=True) -> list[tuple]:
     "Check source code string for style violations."
     lines = source.splitlines()
     if should_skip_file(lines): return []
@@ -406,6 +638,7 @@ def check_source(source: str, path: str) -> list[tuple]:
     suppressed = suppressed_lines(lines)
     str_spans = string_token_spans(source, lines)
     line_infos = token_line_infos(source)
+    if check_unused: check_unused_imports(source, tree, lines, path, violations, suppressed)
     check_short_import_runs(tree, lines, path, violations, suppressed)
     check_standalone_closers(line_infos, lines, path, violations, suppressed)
     check_continuation_indents(line_infos, lines, path, violations, suppressed)
@@ -488,20 +721,93 @@ def check_file(path: str) -> list[tuple]:
     with open(path, encoding="utf-8") as f: source = f.read()
     return check_source(source, path)
 
+def _cell_source(cell) -> str:
+    "Notebook cell source."
+    source = cell.get("source", [])
+    return source if isinstance(source, str) else "".join(source)
+
+def _is_export_cell(source: str) -> bool:
+    "Check for nbdev export markers."
+    return bool(NB_EXPORT_RE.search(source))
+
+def _notebook_cells(nb, path: str) -> list[dict]:
+    "Notebook code cell metadata."
+    cells = []
+    for cell in nb.get("cells", []):
+        if cell.get("cell_type") != "code": continue
+        source = _cell_source(cell)
+        if not source.strip(): continue
+        cell_id = cell.get("id", "unknown")
+        lines = source.splitlines()
+        cells.append(dict(id=cell_id, path=f"{path}:cell[{cell_id}]", source=source, lines=lines, export=_is_export_cell(source),
+            skip=should_skip_file(lines)))
+    return cells
+
+def _combine_notebook_cells(cells: list[dict]) -> tuple[str, dict]:
+    "Combine notebook cell sources and map line numbers back to cells."
+    combined, line_map = [], {}
+    for i, cell in enumerate(cells):
+        for lineno, line in enumerate(cell["lines"], start=1):
+            line_map[len(combined) + 1] = (cell, lineno)
+            combined.append(line)
+        if i != len(cells) - 1: combined.append("")
+    return "\n".join(combined), line_map
+
+def _notebook_node_location(node, line_map: dict) -> tuple[str, int, list]:
+    "Map a combined-source node back to its notebook cell."
+    cell, lineno = line_map[node.lineno]
+    end = lineno + getattr(node, "end_lineno", node.lineno) - node.lineno
+    return cell["path"], lineno, cell["lines"][lineno - 1:end]
+
+def _first_non_export_import_cell_id(cells: list[dict]) -> str | None:
+    "First non-exported cell with top-level import/from statements."
+    for cell in cells:
+        try: tree = ast.parse(cell["source"], filename=cell["path"])
+        except SyntaxError: continue
+        if any(isinstance(node, (ast.Import, ast.ImportFrom)) for node in tree.body): return cell["id"]
+    return None
+
+def _check_notebook_unused_imports(cells: list[dict], path: str, violations: list[tuple]):
+    "Check unused imports across exported notebook cells."
+    export_cells = [cell for cell in cells if cell["export"] and not cell["skip"]]
+    if not export_cells: return
+    export_source, line_map = _combine_notebook_cells(export_cells)
+    export_lines = export_source.splitlines()
+    try: export_tree = ast.parse(export_source, filename=path)
+    except SyntaxError: return
+    suppressed = suppressed_lines(export_lines)
+    non_export_cells = [cell for cell in cells if not cell["export"] and not cell["skip"]]
+    non_export_used = set()
+    target_cell_id = _first_non_export_import_cell_id(non_export_cells)
+    if non_export_cells:
+        non_export_source, _ = _combine_notebook_cells(non_export_cells)
+        try: non_export_tree = ast.parse(non_export_source, filename=path)
+        except SyntaxError: non_export_tree = None
+        if non_export_tree is not None: non_export_used = free_load_names(non_export_source, non_export_tree, path)
+    hint = "remove unused imports; re-exports belong in `__all__` or package `__init__.py`"
+    move_hint = "move imports used only in non-exported cells into a non-exported imports cell"
+    if target_cell_id: move_hint = f"move imports used only in non-exported cells to cell {target_cell_id}"
+    for node,unused,kind in unused_import_items(export_source, export_tree, path):
+        if node.lineno in suppressed: continue
+        cell_path, lineno, node_src = _notebook_node_location(node, line_map)
+        moved = [name for name in unused if kind == "module" and name in non_export_used]
+        dead = [name for name in unused if name not in moved]
+        if moved:
+            msg = with_hint(f"exported-cell import only used in non-exported cells: {', '.join(moved)}", move_hint)
+            violations.append((cell_path, lineno, msg, node_src))
+        if dead:
+            msg = with_hint(f"unused import: {', '.join(dead)}", hint)
+            violations.append((cell_path, lineno, msg, node_src))
+
 def check_notebook(path: str) -> list[tuple]:
     "Check Jupyter notebook for style violations."
     with open(path, encoding="utf-8") as f: nb = json.load(f)
     violations = []
-    for cell in nb.get("cells", []):
-        if cell.get("cell_type") != "code": continue
-        cell_id = cell.get("id", "unknown")
-        source_lines = cell.get("source", [])
-        if isinstance(source_lines, str): source = source_lines
-        else: source = "".join(source_lines)
-        if not source.strip(): continue
-        cell_path = f"{path}:cell[{cell_id}]"
-        cell_violations = check_source(source, cell_path)
+    cells = _notebook_cells(nb, path)
+    for cell in cells:
+        cell_violations = check_source(cell["source"], cell["path"], check_unused=False)
         violations.extend(cell_violations)
+    _check_notebook_unused_imports(cells, path, violations)
     return violations
 
 def check_path(path: str) -> list[tuple]:

@@ -28,6 +28,7 @@ def test_chkstyle_reports_expected_violations(tmp_path):
             """doc"""
             return 1
 
+        import pathlib
         x: int = 1
         data = {"a": 1, "b": 2, "c": 3}
         a = 1; b = 2
@@ -46,7 +47,7 @@ def test_chkstyle_reports_expected_violations(tmp_path):
         '''))
     expected = {"single-line docstring uses triple quotes", "lhs assignment annotation",
         "dict literal with 3+ identifier keys", "semicolon statement separator", "multi-line from-import",
-        "if single-statement body not one-liner", "inefficient multiline expression", "line >160 chars",
+        "if single-statement body not one-liner", "inefficient multiline expression", "line >160 chars", "unused import: pathlib",
         "nested generics depth 2"}
     assert all(_has_msg(msgs, msg) for msg in expected), msgs
 
@@ -194,6 +195,78 @@ def test_chkstyle_flags_continuation_indent(tmp_path):
                 beta_parameter_name=second_value_identifier)
         """))
     assert _has_msg(msgs, "continuation line indent"), msgs
+
+def test_chkstyle_flags_unused_import(tmp_path):
+    msgs = _msgs(_check_py(tmp_path, """
+        import os
+        """))
+    assert _has_msg(msgs, "unused import: os"), msgs
+
+def test_chkstyle_allows_import_used_in_nested_function(tmp_path):
+    assert _check_py(tmp_path, """
+        import os
+
+        def outer():
+            def inner(): return os.getcwd()
+            return inner()
+        """) == []
+
+def test_chkstyle_allows_import_used_in_lambda_and_listcomp(tmp_path):
+    assert _check_py(tmp_path, """
+        import os
+        f = lambda: os.getcwd()
+        xs = [p for p in os.listdir('.')]
+        """) == []
+
+def test_chkstyle_flags_import_shadowed_in_listcomp(tmp_path):
+    msgs = _msgs(_check_py(tmp_path, """
+        import os
+        xs = [os for os in range(3)]
+        """))
+    assert _has_msg(msgs, "unused import: os"), msgs
+
+def test_chkstyle_allows_import_used_in___all__(tmp_path):
+    assert _check_py(tmp_path, """
+        from .mod import foo, bar
+
+        __all__ = ["foo"]
+        __all__ += ["bar"]
+        """) == []
+
+def test_chkstyle_allows_type_only_import_with_future_annotations(tmp_path):
+    assert _check_py(tmp_path, """
+        from __future__ import annotations
+        from pathlib import Path
+
+        def f(x: Path) -> Path: return x
+        """) == []
+
+def test_chkstyle_skips_unused_import_rule_in___init__(tmp_path):
+    path = _write(tmp_path, "__init__.py", "from .mod import foo\n")
+    assert chkstyle.check_file(str(path)) == []
+
+def test_chkstyle_notebook_unused_import_checks_only_export_cells(tmp_path):
+    assert _check_nb(tmp_path, ["import os\n"]) == []
+
+def test_chkstyle_notebook_flags_exported_import_used_only_in_non_export_cells(tmp_path):
+    violations = _check_nb(tmp_path, ["#| export\nimport os\n", "import sys\n", "print(os.getcwd())\n"])
+    msgs = _msgs(violations)
+    assert _has_msg(msgs, "exported-cell import only used in non-exported cells: os"), msgs
+    assert any("cell1" in msg for msg in msgs), msgs
+    assert not _has_msg(msgs, "unused import: os"), msgs
+    assert len(violations) == 1 and violations[0][1] == 2
+
+def test_chkstyle_notebook_exported_import_message_falls_back_without_import_cell(tmp_path):
+    msgs = _msgs(_check_nb(tmp_path, ["#| export\nimport os\n", "print(os.getcwd())\n"]))
+    assert _has_msg(msgs, "exported-cell import only used in non-exported cells: os"), msgs
+    assert not any("move imports used only in non-exported cells to cell" in msg for msg in msgs), msgs
+
+def test_chkstyle_notebook_allows_exported_import_used_in_later_export_cell(tmp_path):
+    assert _check_nb(tmp_path, ["#| export\nimport os\n", "#| export\nprint(os.getcwd())\n"]) == []
+
+def test_chkstyle_notebook_flags_truly_unused_exported_import(tmp_path):
+    msgs = _msgs(_check_nb(tmp_path, ["#| export\nimport os\n"]))
+    assert _has_msg(msgs, "unused import: os"), msgs
 
 def test_chkstyle_notebook_reports_violations(tmp_path):
     msgs = _msgs(_check_nb(tmp_path, ["x: int = 1\ndata = {'a': 1, 'b': 2, 'c': 3}\n"]))

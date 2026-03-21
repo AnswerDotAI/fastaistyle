@@ -187,6 +187,22 @@ import pathlib
 import os, sys, pathlib
 ```
 
+### `unused import`
+Remove imports that are never referenced.
+
+```python
+# Bad
+import os
+
+# Good
+import os
+print(os.getcwd())
+```
+
+Imports named in a simple static `__all__` count as used. Package `__init__.py` files are exempt from this rule so re-export modules stay quiet.
+
+For notebooks, `unused import` is checked across `#| export` / `#| exports` cells as one exported module. If an exported-cell import is only referenced from non-exported cells, `chkstyle` asks you to move it into a non-exported imports cell, recommending the first non-exported cell that already has imports when it can find one.
+
 ### `closing bracket on its own line`
 Don't leave a bare closing `)`, `]`, or `}` on a line by itself.
 
