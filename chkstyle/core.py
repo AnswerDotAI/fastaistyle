@@ -676,6 +676,9 @@ def check_source(source: str, path: str, check_unused: bool=True) -> list[tuple]
                 if total_len <= MAX_LINE_LEN:
                     add_violation(violations, path, node.lineno, with_hint("multi-line from-import",
                         "use a single-line import when it fits"), import_lines, suppressed)
+                elif is_inefficient_multiline(import_lines, first_line_indent(lines, node.lineno)):
+                    add_violation(violations, path, node.lineno, with_hint("inefficient multi-line from-import",
+                        "condense to fewer lines"), import_lines, suppressed)
         has_doc = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body
         if has_doc and is_docstring_stmt(node.body[0]):
             check_single_line_docstring(source, lines, node.body[0], path, violations, suppressed)

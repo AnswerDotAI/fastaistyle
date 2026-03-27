@@ -179,6 +179,26 @@ def test_chkstyle_flags_consecutive_short_imports(tmp_path):
         """))
     assert _has_msg(msgs, "consecutive short imports"), msgs
 
+def test_chkstyle_flags_inefficient_multiline_from_import(tmp_path):
+    msgs = _msgs(_check_py(tmp_path, """
+        from .session import (
+            DEFAULT_MAX_BUFFER_BYTES,
+            DEFAULT_MAX_OUTPUT_BYTES,
+            BgtermError,
+            PollResult,
+            Session,
+            close_session,
+            kill_session,
+            list_sessions,
+            poll_session,
+            read_output,
+            start_session,
+            terminate_session,
+            wait_for_result,
+            write_stdin)
+        """))
+    assert _has_msg(msgs, "inefficient multi-line from-import"), msgs
+
 def test_chkstyle_flags_closing_bracket_on_own_line(tmp_path):
     msgs = _msgs(_check_py(tmp_path, """
         result = some_really_long_function_name_for_testing_closer_layout(
