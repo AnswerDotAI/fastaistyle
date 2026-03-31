@@ -835,6 +835,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--skip-path", action="append", default=None, help="Folder name/path to skip (repeatable)")
     args = parser.parse_args(argv[1:])
     cfg = load_config(_cfg_root(args.paths))
+    if cfg.get("disabled"): return 0
     skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
     skip_re = re.compile(skip_pattern) if skip_pattern else None
     skip_paths = args.skip_path if args.skip_path is not None else _cfg_skip_paths(cfg)
