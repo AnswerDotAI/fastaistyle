@@ -38,7 +38,7 @@ def _parse_skip_paths(skip_paths) -> tuple[set, set]:
 def _skip(d, rel_path: str, skip_path_re, skip_names: set[str], skip_rel_paths: set[str]) -> bool:
     "Check whether directory should be skipped."
     if d in SKIP_DIRS or d.startswith("."): return True
-    if skip_path_re and (skip_path_re.fullmatch(d) or skip_path_re.fullmatch(rel_path)): return True
+    if skip_path_re and (skip_path_re.match(d) or skip_path_re.match(rel_path)): return True
     if d in skip_names: return True
     return any(rel_path == path or rel_path.startswith(f"{path}/") for path in skip_rel_paths)
 
@@ -836,7 +836,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Check Python files for style violations")
     parser.add_argument("paths", nargs="*", default=["."], help="Files and/or directories to check")
     parser.add_argument("--skip-path", action="append", default=None, help="Folder name/path to skip (repeatable)")
-    parser.add_argument("--skip-path-re", help="Regex to skip normalized folder names/paths (must fully match)")
+    parser.add_argument("--skip-path-re", help="Regex to skip normalized folder names/paths (uses Python re.match)")
     args = parser.parse_args(argv[1:])
     cfg = load_config(_cfg_root(args.paths))
     if cfg.get("disabled"): return 0

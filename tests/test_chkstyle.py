@@ -157,7 +157,7 @@ def test_chkstyle_config_skip_path_re(tmp_path, capsys):
     gen_file.write_text("z: int = 3\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
         [tool.chkstyle]
-        skip-path-re = "skipme|src/generated"
+        skip-path-re = "skip|src/gen"
         """), encoding="utf-8")
     assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
     out = capsys.readouterr().out
@@ -193,7 +193,7 @@ def test_chkstyle_cli_skip_path_re(tmp_path, capsys):
     keep_file.write_text("x: int = 1\n", encoding="utf-8")
     skip_file.write_text("y: int = 2\n", encoding="utf-8")
     gen_file.write_text("z: int = 3\n", encoding="utf-8")
-    assert chkstyle.main(["chkstyle", "--skip-path-re", "skipme|src/generated", str(tmp_path)]) == 1
+    assert chkstyle.main(["chkstyle", "--skip-path-re", "skip|src/gen", str(tmp_path)]) == 1
     out = capsys.readouterr().out
     assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
 
