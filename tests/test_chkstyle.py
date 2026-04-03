@@ -144,6 +144,25 @@ def test_chkstyle_main_accepts_multiple_paths(tmp_path, capsys):
     out = capsys.readouterr().out
     assert str(p1) in out and str(p2) in out
 
+def test_chkstyle_config_skip_path_re(tmp_path, capsys):
+    keep_dir, skip_dir, gen_dir = tmp_path / "keep", tmp_path / "skipme", tmp_path / "src" / "generated"
+    keep_dir.mkdir()
+    skip_dir.mkdir()
+    gen_dir.mkdir(parents=True)
+    keep_file = keep_dir / "keep.py"
+    skip_file = skip_dir / "skip.py"
+    gen_file = gen_dir / "gen.py"
+    keep_file.write_text("x: int = 1\n", encoding="utf-8")
+    skip_file.write_text("y: int = 2\n", encoding="utf-8")
+    gen_file.write_text("z: int = 3\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.chkstyle]
+        skip-path-re = "skipme|src/generated"
+        """), encoding="utf-8")
+    assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
+
 def test_chkstyle_config_skip_paths(tmp_path, capsys):
     keep_dir, skip_dir, gen_dir = tmp_path / "keep", tmp_path / "skipme", tmp_path / "src" / "generated"
     keep_dir.mkdir()
@@ -160,6 +179,36 @@ def test_chkstyle_config_skip_paths(tmp_path, capsys):
         skip_paths = ["skipme", "src/generated"]
         """), encoding="utf-8")
     assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
+
+def test_chkstyle_cli_skip_path_re(tmp_path, capsys):
+    keep_dir, skip_dir, gen_dir = tmp_path / "keep", tmp_path / "skipme", tmp_path / "src" / "generated"
+    keep_dir.mkdir()
+    skip_dir.mkdir()
+    gen_dir.mkdir(parents=True)
+    keep_file = keep_dir / "keep.py"
+    skip_file = skip_dir / "skip.py"
+    gen_file = gen_dir / "gen.py"
+    keep_file.write_text("x: int = 1\n", encoding="utf-8")
+    skip_file.write_text("y: int = 2\n", encoding="utf-8")
+    gen_file.write_text("z: int = 3\n", encoding="utf-8")
+    assert chkstyle.main(["chkstyle", "--skip-path-re", "skipme|src/generated", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
+
+def test_chkstyle_cli_skip_path(tmp_path, capsys):
+    keep_dir, skip_dir, gen_dir = tmp_path / "keep", tmp_path / "skipme", tmp_path / "src" / "generated"
+    keep_dir.mkdir()
+    skip_dir.mkdir()
+    gen_dir.mkdir(parents=True)
+    keep_file = keep_dir / "keep.py"
+    skip_file = skip_dir / "skip.py"
+    gen_file = gen_dir / "gen.py"
+    keep_file.write_text("x: int = 1\n", encoding="utf-8")
+    skip_file.write_text("y: int = 2\n", encoding="utf-8")
+    gen_file.write_text("z: int = 3\n", encoding="utf-8")
+    assert chkstyle.main(["chkstyle", "--skip-path", "skipme", "--skip-path", "src/generated", str(tmp_path)]) == 1
     out = capsys.readouterr().out
     assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
 

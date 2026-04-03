@@ -35,19 +35,19 @@ def _parse_skip_paths(skip_paths) -> tuple[set, set]:
         else: names.add(path)
     return names, rel_paths
 
-def _skip(d, rel_path: str, skip_re, skip_names: set[str], skip_rel_paths: set[str]) -> bool:
+def _skip(d, rel_path: str, skip_path_re, skip_names: set[str], skip_rel_paths: set[str]) -> bool:
     "Check whether directory should be skipped."
     if d in SKIP_DIRS or d.startswith("."): return True
-    if skip_re and skip_re.fullmatch(d): return True
+    if skip_path_re and (skip_path_re.fullmatch(d) or skip_path_re.fullmatch(rel_path)): return True
     if d in skip_names: return True
     return any(rel_path == path or rel_path.startswith(f"{path}/") for path in skip_rel_paths)
 
-def iter_py_files(root: str, skip_re=None, skip_paths=None):
+def iter_py_files(root: str, skip_path_re=None, skip_paths=None):
     "Iter py and ipynb files."
     skip_names, skip_rel_paths = _parse_skip_paths(skip_paths)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         rel_dir = _norm_relpath(os.path.relpath(dirpath, root))
-        dirnames[:] = [d for d in dirnames if not _skip(d, _norm_relpath(f"{rel_dir}/{d}"), skip_re, skip_names, skip_rel_paths)]
+        dirnames[:] = [d for d in dirnames if not _skip(d, _norm_relpath(f"{rel_dir}/{d}"), skip_path_re, skip_names, skip_rel_paths)]
         for name in filenames:
             if not (name.endswith(".py") or name.endswith(".ipynb")): continue
             path = os.path.join(dirpath, name)
@@ -823,21 +823,25 @@ def _cfg_root(paths: list[str]) -> str:
     return paths[0] if len(paths) == 1 and os.path.isdir(paths[0]) else "."
 
 def _cfg_skip_paths(cfg: dict) -> list[str]:
-    "Load skip_paths from config."
+    "Load skip paths from config."
     return cfg.get("skip_paths") or cfg.get("skip-paths") or []
+
+def _cfg_skip_path_re(cfg: dict) -> str | None:
+    "Load skip path regex from config."
+    return cfg.get("skip-path-re")
 
 def main(argv: list[str]) -> int:
     "Main."
     import argparse
     parser = argparse.ArgumentParser(description="Check Python files for style violations")
     parser.add_argument("paths", nargs="*", default=["."], help="Files and/or directories to check")
-    parser.add_argument("--skip-folder-re", help="Regex to skip folders (must match whole name)")
     parser.add_argument("--skip-path", action="append", default=None, help="Folder name/path to skip (repeatable)")
+    parser.add_argument("--skip-path-re", help="Regex to skip normalized folder names/paths (must fully match)")
     args = parser.parse_args(argv[1:])
     cfg = load_config(_cfg_root(args.paths))
     if cfg.get("disabled"): return 0
-    skip_pattern = args.skip_folder_re or cfg.get("skip-folder-re")
-    skip_re = re.compile(skip_pattern) if skip_pattern else None
+    skip_pattern = args.skip_path_re or _cfg_skip_path_re(cfg)
+    skip_path_re = re.compile(skip_pattern) if skip_pattern else None
     skip_paths = args.skip_path if args.skip_path is not None else _cfg_skip_paths(cfg)
     all_violations = []
     seen = set()
@@ -847,7 +851,7 @@ def main(argv: list[str]) -> int:
             all_violations.extend(check_path(root))
             seen.add(root)
             continue
-        for path in iter_py_files(root, skip_re, skip_paths):
+        for path in iter_py_files(root, skip_path_re, skip_paths):
             if path in seen: continue
             all_violations.extend(check_path(path))
             seen.add(path)

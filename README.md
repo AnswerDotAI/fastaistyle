@@ -86,9 +86,9 @@ Check multiple files/folders in one run:
 chkstyle path/to/code tests unit.py
 ```
 
-Skip folders matching a regex (must match the whole folder name):
+Skip folders/paths matching a regex (must fully match the folder name or normalized relative path):
 ```bash
-chkstyle --skip-folder-re 'test.*|migrations|vendor'
+chkstyle --skip-path-re 'test.*|migrations|vendor|src/generated'
 ```
 
 Skip specific folders by name/path (repeatable):
@@ -114,8 +114,8 @@ Configure `chkstyle` in your `pyproject.toml`:
 
 ```toml
 [tool.chkstyle]
-skip-folder-re = "test.*|migrations|vendor"
 skip_paths = ["vendor", "src/generated"]
+skip-path-re = "test.*|migrations|vendor|src/generated"
 ```
 
 Command-line arguments override config file settings.
