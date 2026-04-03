@@ -36,7 +36,7 @@ def _parse_skip_paths(skip_paths) -> tuple[set, set]:
     return names, rel_paths
 
 def _skip(d, rel_path: str, skip_path_re, skip_names: set[str], skip_rel_paths: set[str]) -> bool:
-    "Check whether directory should be skipped."
+    "Check whether path entry should be skipped."
     if d in SKIP_DIRS or d.startswith("."): return True
     if skip_path_re and (skip_path_re.match(d) or skip_path_re.match(rel_path)): return True
     if d in skip_names: return True
@@ -50,6 +50,8 @@ def iter_py_files(root: str, skip_path_re=None, skip_paths=None):
         dirnames[:] = [d for d in dirnames if not _skip(d, _norm_relpath(f"{rel_dir}/{d}"), skip_path_re, skip_names, skip_rel_paths)]
         for name in filenames:
             if not (name.endswith(".py") or name.endswith(".ipynb")): continue
+            rel_path = _norm_relpath(f"{rel_dir}/{name}")
+            if _skip(name, rel_path, skip_path_re, skip_names, skip_rel_paths): continue
             path = os.path.join(dirpath, name)
             if os.path.islink(path): continue
             yield path
@@ -835,8 +837,8 @@ def main(argv: list[str]) -> int:
     import argparse
     parser = argparse.ArgumentParser(description="Check Python files for style violations")
     parser.add_argument("paths", nargs="*", default=["."], help="Files and/or directories to check")
-    parser.add_argument("--skip-path", action="append", default=None, help="Folder name/path to skip (repeatable)")
-    parser.add_argument("--skip-path-re", help="Regex to skip normalized folder names/paths (uses Python re.match)")
+    parser.add_argument("--skip-path", action="append", default=None, help="Path to skip (repeatable)")
+    parser.add_argument("--skip-path-re", help="Regex to skip normalized paths (uses Python re.match)")
     args = parser.parse_args(argv[1:])
     cfg = load_config(_cfg_root(args.paths))
     if cfg.get("disabled"): return 0

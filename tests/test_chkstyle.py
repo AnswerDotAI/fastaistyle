@@ -212,6 +212,28 @@ def test_chkstyle_cli_skip_path(tmp_path, capsys):
     out = capsys.readouterr().out
     assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
 
+def test_chkstyle_config_skip_file_with_path_re(tmp_path, capsys):
+    keep_file = _write(tmp_path, "keep.py", "x: int = 1\n")
+    skip_file = _write(tmp_path, "_modidx.py", "y: int = 2\n")
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.chkstyle]
+        skip-path-re = "_modidx.py"
+        """), encoding="utf-8")
+    assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert str(keep_file) in out and str(skip_file) not in out
+
+def test_chkstyle_config_skip_file_with_skip_paths(tmp_path, capsys):
+    keep_file = _write(tmp_path, "keep.py", "x: int = 1\n")
+    skip_file = _write(tmp_path, "_modidx.py", "y: int = 2\n")
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.chkstyle]
+        skip_paths = ["_modidx.py"]
+        """), encoding="utf-8")
+    assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert str(keep_file) in out and str(skip_file) not in out
+
 def test_chkstyle_allows_multiline_def_with_docments(tmp_path):
     assert _check_py(tmp_path, """
         def ws_clone_cli(

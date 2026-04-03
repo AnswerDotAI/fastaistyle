@@ -86,12 +86,12 @@ Check multiple files/folders in one run:
 chkstyle path/to/code tests unit.py
 ```
 
-Skip folders/paths matching a regex. This uses Python `re.match`, so add `^` / `$` yourself when you want exact matches:
+Skip paths matching a regex. This uses Python `re.match`, so add `^` / `$` yourself when you want exact matches:
 ```bash
 chkstyle --skip-path-re 'test|migrations|vendor|src/gen'
 ```
 
-Skip specific folders by name/path (repeatable):
+Skip specific paths by name/path (repeatable):
 ```bash
 chkstyle --skip-path vendor --skip-path src/generated
 ```
