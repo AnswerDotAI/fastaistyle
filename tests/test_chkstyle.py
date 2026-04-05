@@ -234,6 +234,22 @@ def test_chkstyle_config_skip_file_with_skip_paths(tmp_path, capsys):
     out = capsys.readouterr().out
     assert str(keep_file) in out and str(skip_file) not in out
 
+def test_chkstyle_subdir_target_uses_parent_pyproject(monkeypatch, tmp_path, capsys):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    keep_file = pkg / "keep.py"
+    skip_file = pkg / "_modidx.py"
+    keep_file.write_text("x: int = 1\n", encoding="utf-8")
+    skip_file.write_text("y: int = 2\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.chkstyle]
+        skip-path-re = "_modidx.py"
+        """), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert chkstyle.main(["chkstyle", "pkg/"]) == 1
+    out = capsys.readouterr().out
+    assert str(keep_file.relative_to(tmp_path)) in out and str(skip_file.relative_to(tmp_path)) not in out
+
 def test_chkstyle_allows_multiline_def_with_docments(tmp_path):
     assert _check_py(tmp_path, """
         def ws_clone_cli(
@@ -322,6 +338,19 @@ def test_chkstyle_allows_import_used_in___all__(tmp_path):
 
         __all__ = ["foo"]
         __all__ += ["bar"]
+        """) == []
+
+def test_chkstyle_never_flags___all__(tmp_path):
+    long_all = ', '.join(f'"item_{i}"' for i in range(30))
+    assert _check_py(tmp_path, f"""
+        __all__ = [{long_all}]
+        """) == []
+    assert _check_py(tmp_path, """
+        __all__ = [
+            "one",
+            "two",
+            "three",
+        ]
         """) == []
 
 def test_chkstyle_allows_type_only_import_with_future_annotations(tmp_path):
