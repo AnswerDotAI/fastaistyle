@@ -15,8 +15,7 @@ RULE_PREFIXES = [
     ("exported-cell import only used in non-exported cells", "exported-import-nonexport"), ("single-line docstring uses triple quotes", "single-line-docstring"),
     ("dict literal with 3+ identifier keys", "dict-literal"), ("consecutive short imports", "consecutive-short-imports"),
     ("closing bracket on its own line", "closing-bracket"), ("continuation line indent", "continuation-indent"),
-    ("multi-line from-import", "multi-line-from-import"), ("inefficient multi-line from-import", "inefficient-multiline-from-import"),
-    ("inefficient multiline signature/header", "inefficient-multiline-signature"), ("inefficient multiline annotation", "inefficient-multiline-annotation"),
+    ("multi-line from-import", "multi-line-from-import"), ("inefficient multi-line from-import", "inefficient-multiline-from-import"), ("inefficient multiline signature/header", "inefficient-multiline-signature"), ("inefficient multiline annotation", "inefficient-multiline-annotation"),
     ("inefficient multiline expression", "inefficient-multiline-expression"), ("lhs assignment annotation", "lhs-assignment-annotation"),
     ("semicolon statement separator", "semicolon"), ("unused import", "unused-import"), ("line >", "line-too-long"),
     ("nested generics depth", "nested-generics"), ("syntax error", "syntax-error")]
@@ -26,11 +25,7 @@ COMPOUND_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncW
 @dataclass
 class Issue:
     "A style issue, with an optional safe edit."
-    rule: str
-    path: str
-    lineno: int
-    msg: str
-    lines: list[str]
+    rule: str; path: str; lineno: int; msg: str; lines: list[str]
     edit: tuple[int, int, str] | None = None
 
     def violation(self) -> tuple: return self.path, self.lineno, self.msg, self.lines
@@ -38,16 +33,8 @@ class Issue:
 @dataclass
 class SourceCtx:
     "Parsed source plus derived checker/fixer state."
-    source: str
-    path: str
-    lines: list[str]
-    source_lines: list[str]
-    tree: object
-    offsets: list[int]
-    suppressed: set[int]
-    str_spans: dict
-    line_infos: dict
-    dataclass_fields: set
+    source: str; path: str; lines: list[str]; source_lines: list[str]; tree: object; offsets: list[int]
+    suppressed: set[int]; str_spans: dict; line_infos: dict; dataclass_fields: set
 
 def load_config(root="."):
     "Load config from pyproject.toml."
@@ -71,7 +58,8 @@ def _parse_skip_paths(skip_paths) -> tuple[set, set]:
         if not item: continue
         path = _norm_relpath(str(item).strip())
         if not path: continue
-        if "/" in path: rel_paths.add(path)
+        if "/" in path:
+            rel_paths.add(path)
         else: names.add(path)
     return names, rel_paths
 
@@ -106,11 +94,9 @@ def dict_keyword_keys(node) -> list[str] | None:
     return keys if len(keys) == len(set(keys)) else None
 
 def is_docstring_stmt(stmt) -> bool:
-    "Docstring stmt."
     return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)
 
 def node_lines(source: str, lines: list[str], node) -> list[str]:
-    "Node lines."
     seg = ast.get_source_segment(source, node)
     if seg: return [line.rstrip() for line in seg.splitlines()]
     lineno = getattr(node, "lineno", None)
@@ -118,19 +104,16 @@ def node_lines(source: str, lines: list[str], node) -> list[str]:
     return []
 
 def segment_lines(source: str, node) -> list[str]:
-    "Segment lines."
     seg = ast.get_source_segment(source, node)
     if not seg: return []
     return [line.rstrip() for line in seg.splitlines()]
 
 def first_line_indent(lines: list[str], lineno: int | None) -> int:
-    "First line indent."
     if not lineno or lineno < 1 or lineno > len(lines): return 0
     line = lines[lineno - 1]
     return len(line) - len(line.lstrip())
 
 def combined_len(seg_lines: list[str], indent: int) -> int:
-    "Combined length."
     return sum(len(line.strip()) for line in seg_lines) + indent
 
 def _has_trailing_comment(line: str) -> bool:
@@ -145,11 +128,9 @@ def _has_comment(line: str) -> bool:
     return stripped.startswith("#") or _has_trailing_comment(line)
 
 def line_indent(line: str) -> int:
-    "Line indent."
     return len(line) - len(line.lstrip())
 
 def is_inefficient_multiline(seg_lines: list[str], indent: int) -> bool:
-    "Inefficient multiline."
     if len(seg_lines) <= 1: return False
     if any(_has_comment(line) for line in seg_lines): return False
     total = combined_len(seg_lines, indent)
@@ -157,7 +138,6 @@ def is_inefficient_multiline(seg_lines: list[str], indent: int) -> bool:
     return needed < len(seg_lines)
 
 def suite_len(lines: list[str], header_lineno: int | None, stmt_lineno: int | None) -> int | None:
-    "Suite length."
     if not header_lineno or not stmt_lineno: return None
     if header_lineno < 1 or stmt_lineno < 1: return None
     if header_lineno > len(lines) or stmt_lineno > len(lines): return None
@@ -167,7 +147,6 @@ def suite_len(lines: list[str], header_lineno: int | None, stmt_lineno: int | No
     return len(first.strip()) + len(second.strip()) + indent
 
 def find_suite_header(lines: list[str], start: int, stop: int, keyword: str) -> int:
-    "Find suite header."
     if start < 1 or stop < 1 or start > len(lines): return stop
     stop = max(1, min(stop, len(lines)))
     for idx in range(start - 1, stop - 2, -1):
@@ -199,7 +178,6 @@ def _contains_multiline_str(node) -> bool:
     return False
 
 def max_subscript_depth(node, depth: int = 0) -> int:
-    "Max subscript depth."
     if node is None: return depth
     if isinstance(node, ast.Subscript):
         depth += 1
@@ -208,7 +186,6 @@ def max_subscript_depth(node, depth: int = 0) -> int:
     return max(depths) if depths else depth
 
 def is_dataclass_decorator(dec) -> bool:
-    "Dataclass decorator."
     if isinstance(dec, ast.Name): return dec.id == "dataclass"
     if isinstance(dec, ast.Attribute): return dec.attr == "dataclass"
     if isinstance(dec, ast.Call): return is_dataclass_decorator(dec.func)
@@ -278,20 +255,15 @@ def _sym_scope_kind(tab) -> str:
     return "lambda" if kind == "function" and tab.get_name() == "lambda" else kind
 
 def _scope_key(kind: str, name: str, lineno: int) -> tuple[str, str, int]:
-    "Stable scope key for AST/symtable matching."
     return kind, name, lineno
 
 def _scope_bindings(tab) -> set[str]:
-    "Names bound in a scope."
-    return {sym.get_name() for sym in tab.get_symbols() if sym.is_local() or sym.is_imported() or sym.is_parameter() or sym.is_assigned()
-        or sym.is_namespace()}
+    return {sym.get_name() for sym in tab.get_symbols() if sym.is_local() or sym.is_imported() or sym.is_parameter() or sym.is_assigned() or sym.is_namespace()}
 
 def _scope_globals(tab) -> set[str]:
-    "Explicit global declarations in a scope."
     return {sym.get_name() for sym in tab.get_symbols() if hasattr(sym, "is_declared_global") and sym.is_declared_global()}
 
 def _scope_nonlocals(tab) -> set[str]:
-    "Explicit nonlocal declarations in a scope."
     return {sym.get_name() for sym in tab.get_symbols() if sym.is_nonlocal()}
 
 def _build_scope_tree(tab, parent=None):
@@ -305,18 +277,15 @@ def _build_scope_tree(tab, parent=None):
     return info
 
 def _root_scope(scope):
-    "Root/module scope."
     while scope["parent"] is not None: scope = scope["parent"]
     return scope
 
 def _next_closure_scope(scope):
-    "Next enclosing closure scope, skipping class scopes."
     scope = scope["parent"]
     while scope is not None and scope["kind"] == "class": scope = scope["parent"]
     return scope
 
 def _resolve_nonlocal(scope, name: str):
-    "Resolve a nonlocal binding."
     scope = _next_closure_scope(scope)
     while scope is not None and scope["kind"] != "module":
         if name in scope["bindings"]: return scope
@@ -373,7 +342,6 @@ def _import_name(alias, from_import: bool=False) -> str:
     return alias.name if from_import else alias.name.split(".", 1)[0]
 
 def _base_path(path: str) -> str:
-    "Notebook cell paths include a cell suffix."
     return path.split(":cell[", 1)[0]
 
 class _UnusedImportVisitor(ast.NodeVisitor):
@@ -523,12 +491,10 @@ def line_len_without_spans(line: str, spans: list[tuple]) -> int:
     return len(line) - removed
 
 def should_skip_file(lines: list[str]) -> bool:
-    "Skip file."
     head = lines[:5]
     return any(_has_pragma(line, "chkstyle: skip") for line in head)
 
 def suppressed_lines(lines: list[str]) -> set[int]:
-    "Suppressed lines."
     suppressed = set()
     off = False
     ignore_next = False
@@ -571,7 +537,6 @@ def _line_span(source_lines: list[str], offsets: list[int], start: int, end: int
     return offsets[start - 1], offsets[end - 1] + len(source_lines[end - 1])
 
 def _line_ending(line: str) -> str:
-    "Line ending."
     if line.endswith("\r\n"): return "\r\n"
     if line.endswith("\n"): return "\n"
     return ""
@@ -625,7 +590,6 @@ def _new_issue(ctx: SourceCtx, rule: str, lineno: int, msg: str, lines: list[str
     return Issue(rule, ctx.path, lineno, msg, lines, edit)
 
 def _append_issue(issues: list[Issue], issue: Issue | None):
-    "Append optional issue."
     if issue is not None: issues.append(issue)
 
 def _node_edit(ctx: SourceCtx, node, repl: str) -> tuple[int, int, str]:
@@ -633,7 +597,6 @@ def _node_edit(ctx: SourceCtx, node, repl: str) -> tuple[int, int, str]:
     return *_node_span(node, ctx.offsets), repl
 
 def _alias_src(alias) -> str:
-    "Import alias source."
     return alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
 
 def _from_import_src(node, names: list | None = None) -> str:
@@ -855,7 +818,6 @@ def _continuation_indent_issues(ctx: SourceCtx) -> list[Issue]:
     return issues
 
 def _line_length_issues(ctx: SourceCtx) -> list[Issue]:
-    "Issues for long lines."
     issues = []
     hint = "wrap at a natural boundary (args/operators); if reformatted literals got taller, avoid lonely `dict(`/`{` lines"
     for lineno, line in enumerate(ctx.lines, start=1):
@@ -863,6 +825,12 @@ def _line_length_issues(ctx: SourceCtx) -> list[Issue]:
         if line_len_without_spans(line, ctx.str_spans.get(lineno, [])) <= MAX_LINE_LEN: continue
         _append_issue(issues, _new_issue(ctx, "line-too-long", lineno, with_hint(f"line >{MAX_LINE_LEN} chars", hint), [line]))
     return issues
+
+def _dataclass_field_semicolon_line(ctx: SourceCtx, lineno: int) -> bool:
+    "Check if a semicolon line only contains dataclass/BaseModel field annotations."
+    stmts = [node for node in ast.walk(ctx.tree) if isinstance(node, ast.stmt) and getattr(node, "lineno", None) == lineno]
+    stmts = [node for node in stmts if not isinstance(node, ast.ClassDef)]
+    return bool(stmts) and all(isinstance(node, ast.AnnAssign) and node in ctx.dataclass_fields for node in stmts)
 
 def _semicolon_issues(ctx: SourceCtx) -> list[Issue]:
     "Issues for semicolon statement separators."
@@ -874,6 +842,7 @@ def _semicolon_issues(ctx: SourceCtx) -> list[Issue]:
         if tok.type == tokenize.OP and tok.string == ";": semis.setdefault(tok.start[0], []).append(tok.start[1])
     for lineno, cols in semis.items():
         line = ctx.lines[lineno - 1]
+        if _dataclass_field_semicolon_line(ctx, lineno): continue
         if line.lstrip().startswith("class "): continue
         edit = None
         if not _has_comment(line) and ":" not in line[:min(cols)]:
@@ -985,12 +954,10 @@ def fix_file(path: str, selected: set[str]) -> bool:
     return True
 
 def _cell_source(cell) -> str:
-    "Notebook cell source."
     source = cell.get("source", [])
     return source if isinstance(source, str) else "".join(source)
 
 def _is_export_cell(source: str) -> bool:
-    "Check for nbdev export markers."
     return bool(NB_EXPORT_RE.search(source))
 
 def _notebook_cells(nb, path: str) -> list[dict]:
@@ -1110,12 +1077,10 @@ def _find_cfg_root(path: str) -> str | None:
         cur = parent
 
 def _cfg_root(paths: list[str]) -> str:
-    "Choose config root."
     if len(paths) != 1: return "."
     return _find_cfg_root(paths[0]) or (paths[0] if os.path.isdir(paths[0]) else ".")
 
 def _cfg_skip_paths(cfg: dict) -> list[str]:
-    "Load skip paths from config."
     return cfg.get("skip_paths") or cfg.get("skip-paths") or []
 
 def _cfg_skip_path_re(cfg: dict) -> str | None:
@@ -1146,7 +1111,6 @@ def _fix_rule_set(enabled: bool, cli_rules, cfg: dict) -> set[str]:
     return SUPPORTED_FIX_RULES if ALL_RULES in rules else rules & SUPPORTED_FIX_RULES
 
 def main(argv: list[str]) -> int:
-    "Main."
     import argparse
     parser = argparse.ArgumentParser(description="Check Python files for style violations")
     parser.add_argument("paths", nargs="*", default=["."], help="Files and/or directories to check")

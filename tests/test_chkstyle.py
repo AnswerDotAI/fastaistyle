@@ -440,6 +440,17 @@ def test_chkstyle_flags_unused_import(tmp_path):
         """))
     assert _has_msg(msgs, "unused import: os"), msgs
 
+def test_chkstyle_allows_dataclass_field_semicolons(tmp_path):
+    msgs = _msgs(_check_py(tmp_path, """
+        from dataclasses import dataclass
+
+        @dataclass
+        class Item:
+            rule: str; path: str; lineno: int; msg: str; lines: list[str]
+        """))
+    assert not _has_msg(msgs, "semicolon statement separator"), msgs
+    assert not _has_msg(msgs, "lhs assignment annotation"), msgs
+
 def test_chkstyle_flags_bare_lhs_annotation(tmp_path):
     assert _has_msg(_msgs(_check_py(tmp_path, """
         x: int
