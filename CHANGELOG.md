@@ -2,6 +2,18 @@
 
 <!-- do not remove -->
 
+## 0.0.16
+
+### New Features
+
+- Allow semicolon-separated field annotations in dataclasses ([#15](https://github.com/AnswerDotAI/fastaistyle/issues/15))
+- Add --fix mode with per-rule auto-fixers and --ignore support ([#14](https://github.com/AnswerDotAI/fastaistyle/issues/14))
+- suppress __all__ lines from style checks and resolve config root from nearest pyproject.toml ([#13](https://github.com/AnswerDotAI/fastaistyle/issues/13))
+- Rename --skip-folder-re to --skip-path-re with support for matching normalized relative paths ([#12](https://github.com/AnswerDotAI/fastaistyle/issues/12))
+- Add `disabled` option ([#11](https://github.com/AnswerDotAI/fastaistyle/issues/11))
+- Add inefficient multi-line from-import check and corresponding test ([#10](https://github.com/AnswerDotAI/fastaistyle/issues/10))
+
+
 ## 0.0.15
 
 ### New Features
