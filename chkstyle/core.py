@@ -1,4 +1,4 @@
-import ast, io, json, math, os, re, symtable, sys, tokenize
+import ast, io, json, keyword, math, os, re, symtable, sys, tokenize
 try: import tomllib
 except ImportError: import tomli as tomllib
 
@@ -6,6 +6,19 @@ SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache
 WRAP_WIDTH = 120
 MAX_LINE_LEN = 160
 NB_EXPORT_RE = re.compile(r"^\s*#\|\s*exports?\b", re.M)
+ALL_RULES = "all"
+SUPPORTED_FIX_RULES = set("consecutive-short-imports continuation-indent closing-bracket dict-literal inefficient-multiline-expression "
+    "lhs-assignment-annotation multi-line-from-import nested-generics semicolon single-line-docstring "
+    "single-statement-body unused-import".split())
+RULE_PREFIXES = [
+    ("exported-cell import only used in non-exported cells", "exported-import-nonexport"), ("single-line docstring uses triple quotes", "single-line-docstring"),
+    ("dict literal with 3+ identifier keys", "dict-literal"), ("consecutive short imports", "consecutive-short-imports"),
+    ("closing bracket on its own line", "closing-bracket"), ("continuation line indent", "continuation-indent"),
+    ("multi-line from-import", "multi-line-from-import"), ("inefficient multi-line from-import", "inefficient-multiline-from-import"),
+    ("inefficient multiline signature/header", "inefficient-multiline-signature"), ("inefficient multiline annotation", "inefficient-multiline-annotation"),
+    ("inefficient multiline expression", "inefficient-multiline-expression"), ("lhs assignment annotation", "lhs-assignment-annotation"),
+    ("semicolon statement separator", "semicolon"), ("unused import", "unused-import"), ("line >", "line-too-long"),
+    ("nested generics depth", "nested-generics"), ("syntax error", "syntax-error")]
 COMPOUND_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.FunctionDef,
     ast.AsyncFunctionDef, ast.ClassDef)
 
@@ -56,9 +69,14 @@ def iter_py_files(root: str, skip_path_re=None, skip_paths=None):
             if os.path.islink(path): continue
             yield path
 
-def is_identifier_str(node) -> bool:
-    "Identifier str."
-    return isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.isidentifier()
+def dict_keyword_keys(node) -> list[str] | None:
+    "Dict keys that can be represented as kwargs."
+    keys = []
+    for key in node.keys:
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str): return None
+        if not key.value.isidentifier() or keyword.iskeyword(key.value): return None
+        keys.append(key.value)
+    return keys if len(keys) == len(set(keys)) else None
 
 def is_docstring_stmt(stmt) -> bool:
     "Docstring stmt."
@@ -94,6 +112,11 @@ def _has_trailing_comment(line: str) -> bool:
     if not stripped or stripped.startswith('#'): return False
     return '#' in stripped
 
+def _has_comment(line: str) -> bool:
+    "Check if line has a comment."
+    stripped = line.strip()
+    return stripped.startswith("#") or _has_trailing_comment(line)
+
 def line_indent(line: str) -> int:
     "Line indent."
     return len(line) - len(line.lstrip())
@@ -101,7 +124,7 @@ def line_indent(line: str) -> int:
 def is_inefficient_multiline(seg_lines: list[str], indent: int) -> bool:
     "Inefficient multiline."
     if len(seg_lines) <= 1: return False
-    if any(_has_trailing_comment(line) for line in seg_lines): return False
+    if any(_has_comment(line) for line in seg_lines): return False
     total = combined_len(seg_lines, indent)
     needed = math.ceil(total / WRAP_WIDTH)
     return needed < len(seg_lines)
@@ -134,6 +157,18 @@ def with_hint(msg: str, hint: str | None = None) -> str:
     if not hint: return msg
     return f"{msg} (hint: {hint})"
 
+def violation_rule(msg: str) -> str:
+    "Rule id for a violation message."
+    base = msg.split(" (hint:", 1)[0]
+    for prefix,rule in RULE_PREFIXES:
+        if base.startswith(prefix): return rule
+    return base.lower().replace(" ", "-")
+
+def filter_violations(violations: list[tuple], ignored: set[str] | None = None) -> list[tuple]:
+    "Remove ignored violations."
+    if not ignored or ALL_RULES in ignored: return [] if ignored and ALL_RULES in ignored else violations
+    return [v for v in violations if violation_rule(v[2]) not in ignored]
+
 def check_single_line_docstring(source: str, lines: list[str], stmt, path: str, violations: list[tuple], suppressed: set[int]):
     "Check single-line docstring."
     doc = stmt.value.value
@@ -156,9 +191,9 @@ def check_suite(parent_kind: str, node, suite, path: str, source: str, lines: li
     header_lineno = getattr(node, "lineno", stmt.lineno)
     if parent_kind in ("else", "finally"): header_lineno = find_suite_header(lines, stmt.lineno, header_lineno, parent_kind)
     if stmt.lineno <= header_lineno: return
-    if parent_kind == "def" and any(_has_trailing_comment(lines[i-1]) for i in range(header_lineno, stmt.lineno)): return
+    if any(_has_comment(lines[i-1]) for i in range(header_lineno, stmt.lineno + 1)): return
     total_len = suite_len(lines, header_lineno, stmt.lineno)
-    if total_len is not None and total_len > 130: return
+    if total_len is not None and total_len > MAX_LINE_LEN: return
     header_line = lines[header_lineno - 1].rstrip("\n")
     body_line = lines[stmt.lineno - 1].rstrip("\n")
     add_violation(violations, path, header_lineno, with_hint(f"{parent_kind} single-statement body not one-liner",
@@ -233,7 +268,8 @@ def dataclass_annassigns(tree) -> set:
             if isinstance(stmt, ast.AnnAssign): annassigns.add(stmt)
     return annassigns
 
-def check_annotation(node, source: str, lines: list[str], path: str, violations: list[tuple], suppressed: set[int]):
+def check_annotation(node, source: str, lines: list[str], path: str, violations: list[tuple], suppressed: set[int],
+    check_nested: bool=False):
     "Check annotation depth and layout."
     if node is None: return
     if getattr(node, "end_lineno", node.lineno) > node.lineno:
@@ -242,6 +278,7 @@ def check_annotation(node, source: str, lines: list[str], path: str, violations:
         if is_inefficient_multiline(seg_lines, indent):
             add_violation(violations, path, node.lineno, with_hint("inefficient multiline annotation",
                 "condense to fewer lines or extract part of the type into a named alias"), seg_lines, suppressed)
+    if not check_nested: return
     depth = max_subscript_depth(node)
     if depth >= 2:
         msg = with_hint(f"nested generics depth {depth}", "simplify or alias nested parts; less precise is fine if still correct")
@@ -570,8 +607,8 @@ def check_standalone_closers(line_infos: dict, lines: list[str], path: str, viol
         toks = info["tokens"]
         if len(toks) != 1: continue
         tok = toks[0]
-        text = lines[lineno - 1].split("#", 1)[0].strip()
-        if text != tok.string: continue
+        if _has_comment(lines[lineno - 1]): continue
+        if lines[lineno - 1].strip() != tok.string: continue
         if tok.type != tokenize.OP or tok.string not in ")]}" or not info["stack"]: continue
         add_violation(violations, path, lineno, with_hint("closing bracket on its own line",
             "move `)`, `]`, or `}` to the end of the previous content line"), [lines[lineno - 1]], suppressed)
@@ -630,6 +667,51 @@ def suppressed_lines(lines: list[str]) -> set[int]:
             ignore_next = False
     return suppressed
 
+def _line_offsets(source: str) -> list[int]:
+    "Starting offset for each 1-based source line."
+    offsets, pos = [], 0
+    for line in source.splitlines(True):
+        offsets.append(pos)
+        pos += len(line)
+    if not offsets: offsets.append(0)
+    return offsets
+
+def _node_span(node, offsets: list[int]) -> tuple[int, int]:
+    "Absolute source span for an AST node."
+    return offsets[node.lineno - 1] + node.col_offset, offsets[node.end_lineno - 1] + node.end_col_offset
+
+def _line_span(source_lines: list[str], offsets: list[int], start: int, end: int | None = None) -> tuple[int, int]:
+    "Absolute source span for inclusive 1-based line range."
+    end = start if end is None else end
+    return offsets[start - 1], offsets[end - 1] + len(source_lines[end - 1])
+
+def _line_ending(line: str) -> str:
+    "Line ending."
+    if line.endswith("\r\n"): return "\r\n"
+    if line.endswith("\n"): return "\n"
+    return ""
+
+def _line_body(line: str) -> str:
+    "Line without ending."
+    return line.removesuffix("\n").removesuffix("\r")
+
+def _has_comments(lines: list[str]) -> bool:
+    "Check if any line has a comment."
+    return any(_has_comment(line) for line in lines)
+
+def _apply_edits(source: str, edits: list) -> str:
+    "Apply non-overlapping source edits from bottom to top."
+    last_start = len(source) + 1
+    for start,end,repl in sorted(edits, key=lambda edit: (edit[0], edit[1]), reverse=True):
+        if end > last_start: continue
+        source = source[:start] + repl + source[end:]
+        last_start = start
+    return source
+
+def _rule_enabled(rule: str, selected: set[str]) -> bool:
+    "Check whether a rule is selected."
+    return ALL_RULES in selected or rule in selected
+
 def _all_assign_lines(tree):
     "Line ranges of __all__ assignments (auto-generated by nbdev)."
     lines = set()
@@ -638,6 +720,186 @@ def _all_assign_lines(tree):
             or isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and node.target.id == "__all__")
         if is_all: lines.update(range(node.lineno, node.end_lineno + 1))
     return lines
+
+def _alias_src(alias) -> str:
+    "Import alias source."
+    return alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
+
+def _from_import_src(node, names: list | None = None) -> str:
+    "Single-line from import source."
+    mod = "." * node.level + (node.module or "")
+    return f"from {mod} import {', '.join(_alias_src(alias) for alias in (names or node.names))}"
+
+def _dict_fix_src(node, source: str, offsets: list[int], indent: int) -> str | None:
+    "Replacement source for an eligible dict literal."
+    keys = dict_keyword_keys(node)
+    if not keys or any(value is None for value in node.values): return None
+    parts = []
+    for key,value in zip(keys, node.values):
+        val_src = ast.get_source_segment(source, value)
+        if val_src is None: return None
+        parts.append(f"{key}={val_src.strip()}")
+    res = f"dict({', '.join(parts)})"
+    return res if indent + len(res) <= MAX_LINE_LEN else None
+
+def _simplify_annotation(node, depth: int = 0):
+    "Remove nested generic levels beyond depth 1."
+    if isinstance(node, ast.Subscript):
+        if depth >= 1: return _simplify_annotation(node.value, depth)
+        return ast.copy_location(ast.Subscript(value=_simplify_annotation(node.value, depth),
+            slice=_simplify_annotation(node.slice, depth + 1), ctx=ast.Load()), node)
+    if isinstance(node, ast.Tuple):
+        elts = [_simplify_annotation(elt, depth) for elt in node.elts]
+        return ast.copy_location(ast.Tuple(elts=elts, ctx=ast.Load()), node)
+    return node
+
+def _suite_fix_edit(source_lines: list[str], offsets: list[int], parent_kind: str, node, suite) -> tuple[int, int, str] | None:
+    "Edit for a single-statement suite."
+    if not suite or len(suite) != 1: return None
+    stmt = suite[0]
+    if is_docstring_stmt(stmt) or isinstance(stmt, COMPOUND_NODES): return None
+    if parent_kind == "else" and isinstance(node, ast.If) and isinstance(stmt, ast.If): return None
+    if getattr(stmt, "end_lineno", stmt.lineno) > stmt.lineno: return None
+    header_lineno = getattr(node, "lineno", stmt.lineno)
+    lines = [_line_body(line) for line in source_lines]
+    if parent_kind in ("else", "finally"): header_lineno = find_suite_header(lines, stmt.lineno, header_lineno, parent_kind)
+    if stmt.lineno != header_lineno + 1: return None
+    if any(_has_comment(lines[i - 1]) for i in range(header_lineno, stmt.lineno + 1)): return None
+    total_len = suite_len(lines, header_lineno, stmt.lineno)
+    if total_len is None or total_len > MAX_LINE_LEN: return None
+    start,end = _line_span(source_lines, offsets, header_lineno, stmt.lineno)
+    return start, end, f"{lines[header_lineno - 1]} {lines[stmt.lineno - 1].strip()}{_line_ending(source_lines[stmt.lineno - 1])}"
+
+def _fix_source_once(source: str, path: str, selected: set[str]) -> str:
+    "Apply one conservative fix pass."
+    source_lines, lines = source.splitlines(True), source.splitlines()
+    if not source_lines or should_skip_file(lines): return source
+    try: tree = ast.parse(source, filename=path)
+    except SyntaxError: return source
+    offsets = _line_offsets(source)
+    suppressed = suppressed_lines(lines) | _all_assign_lines(tree)
+    edits = []
+    dataclass_fields = dataclass_annassigns(tree)
+    line_infos = token_line_infos(source)
+    for node in ast.walk(tree):
+        seg_lines = segment_lines(source, node)
+        if isinstance(node, ast.Expr) and is_docstring_stmt(node) and _rule_enabled("single-line-docstring", selected):
+            if "\n" not in node.value.value and not _has_comments(seg_lines):
+                seg = ast.get_source_segment(source, node) or ""
+                if re.match(r'^[ \t]*[rRuUbBfF]*\"\"\"', seg): edits.append((*_node_span(node, offsets), repr(node.value.value)))
+        if isinstance(node, ast.Dict) and len(node.keys) >= 3 and _rule_enabled("dict-literal", selected):
+            if node.lineno not in suppressed and not _has_comments(seg_lines):
+                if repl := _dict_fix_src(node, source, offsets, first_line_indent(lines, node.lineno)): edits.append((*_node_span(node, offsets), repl))
+        if isinstance(node, ast.AnnAssign) and _rule_enabled("lhs-assignment-annotation", selected):
+            if node.value is not None and node not in dataclass_fields and node.lineno not in suppressed and not _has_comments(seg_lines):
+                target, value = ast.get_source_segment(source, node.target), ast.get_source_segment(source, node.value)
+                if target and value: edits.append((*_node_span(node, offsets), f"{target.strip()} = {value.strip()}"))
+        if isinstance(node, ast.ImportFrom) and "\n" in (ast.get_source_segment(source, node) or "") and _rule_enabled("multi-line-from-import", selected):
+            if node.lineno not in suppressed and not _has_comments(seg_lines):
+                repl = _from_import_src(node)
+                if first_line_indent(lines, node.lineno) + len(repl) <= MAX_LINE_LEN: edits.append((*_node_span(node, offsets), repl))
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.Return, ast.Expr)) and _rule_enabled("inefficient-multiline-expression", selected):
+            expr = node.value if not isinstance(node, ast.Expr) else node.value
+            if expr is None: continue
+            expr_lines = segment_lines(source, expr)
+            if expr and len(expr_lines) > 1 and not _contains_multiline_str(expr) and not _has_comments(expr_lines):
+                repl = ast.unparse(expr)
+                if first_line_indent(lines, expr.lineno) + len(repl) <= MAX_LINE_LEN: edits.append((*_node_span(expr, offsets), repl))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _rule_enabled("nested-generics", selected):
+            args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+            args += [arg for arg in (node.args.vararg, node.args.kwarg) if arg is not None]
+            for arg in args:
+                ann = arg.annotation
+                if ann is not None and max_subscript_depth(ann) >= 2 and ann.lineno not in suppressed:
+                    edits.append((*_node_span(ann, offsets), ast.unparse(_simplify_annotation(ann))))
+    if _rule_enabled("unused-import", selected):
+        for node,unused,_kind in unused_import_items(source, tree, path):
+            if node.lineno in suppressed or getattr(node, "end_lineno", node.lineno) != node.lineno: continue
+            if _has_comment(lines[node.lineno - 1]): continue
+            aliases = [alias for alias in node.names if _import_name(alias, isinstance(node, ast.ImportFrom)) not in unused]
+            start,end = _line_span(source_lines, offsets, node.lineno)
+            if aliases:
+                repl = ("import " + ", ".join(_alias_src(alias) for alias in aliases)) if isinstance(node, ast.Import) else _from_import_src(node, aliases)
+                repl = " " * first_line_indent(lines, node.lineno) + repl + _line_ending(source_lines[node.lineno - 1])
+            else: repl = ""
+            edits.append((start, end, repl))
+    if _rule_enabled("consecutive-short-imports", selected):
+        imports = sorted((node for node in ast.walk(tree) if isinstance(node, ast.Import)), key=lambda node: node.lineno)
+        run = []
+        def flush_run():
+            if len(run) < 2: return
+            start,end = _line_span(source_lines, offsets, run[0].lineno, run[-1].lineno)
+            names = ", ".join(lines[node.lineno - 1].strip().removeprefix("import ").strip() for node in run)
+            edits.append((start, end, " " * first_line_indent(lines, run[0].lineno) + f"import {names}{_line_ending(source_lines[run[-1].lineno - 1])}"))
+        for node in imports:
+            if not _is_short_single_import(node, lines) or node.lineno in suppressed:
+                flush_run()
+                run = []
+                continue
+            if run and (node.lineno != run[-1].lineno + 1 or first_line_indent(lines, node.lineno) != first_line_indent(lines, run[-1].lineno)):
+                flush_run()
+                run = []
+            run.append(node)
+        flush_run()
+    if _rule_enabled("single-statement-body", selected):
+        for node in ast.walk(tree):
+            items = []
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)): items.append(("def", node, node.body))
+            elif isinstance(node, ast.If): items += [("if", node, node.body), ("else", node, node.orelse)]
+            elif isinstance(node, (ast.For, ast.AsyncFor)): items += [("for", node, node.body), ("else", node, node.orelse)]
+            elif isinstance(node, ast.While): items += [("while", node, node.body), ("else", node, node.orelse)]
+            elif isinstance(node, (ast.With, ast.AsyncWith)): items.append(("with", node, node.body))
+            elif isinstance(node, ast.Try):
+                items += [("try", node, node.body), ("else", node, node.orelse), ("finally", node, node.finalbody)]
+                items += [("except", handler, handler.body) for handler in node.handlers]
+            for kind,owner,suite in items:
+                if edit := _suite_fix_edit(source_lines, offsets, kind, owner, suite): edits.append(edit)
+    if _rule_enabled("closing-bracket", selected):
+        for lineno, info in sorted(line_infos.items()):
+            toks = info["tokens"]
+            if len(toks) != 1 or not info["stack"]: continue
+            tok = toks[0]
+            if tok.type != tokenize.OP or tok.string not in ")]}": continue
+            if _has_comment(lines[lineno - 1]) or lines[lineno - 1].strip() != tok.string: continue
+            prev = lineno - 1
+            if prev < 1: continue
+            start,end = _line_span(source_lines, offsets, prev, lineno)
+            edits.append((start, end, f"{_line_body(source_lines[prev - 1]).rstrip()}{tok.string}{_line_ending(source_lines[lineno - 1])}"))
+    if _rule_enabled("continuation-indent", selected):
+        for lineno, info in sorted(line_infos.items()):
+            if not info["stack"] or not info["tokens"]: continue
+            first = info["tokens"][0]
+            if first.type == tokenize.OP and first.string in ")]}": continue
+            expected = first_line_indent(lines, info["stack"][-1]) + 4
+            if line_indent(lines[lineno - 1]) == expected: continue
+            start,end = _line_span(source_lines, offsets, lineno)
+            edits.append((start, end, " " * expected + lines[lineno - 1].lstrip() + _line_ending(source_lines[lineno - 1])))
+    if _rule_enabled("semicolon", selected):
+        try: tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+        except tokenize.TokenError: tokens = []
+        semis = {}
+        for tok in tokens:
+            if tok.type == tokenize.OP and tok.string == ";": semis.setdefault(tok.start[0], []).append(tok.start[1])
+        for lineno, cols in semis.items():
+            line = lines[lineno - 1]
+            if _has_comment(line) or line.lstrip().startswith("class ") or ":" in line[:min(cols)]: continue
+            parts = [part.strip() for part in line.split(";")]
+            if all(parts):
+                start,end = _line_span(source_lines, offsets, lineno)
+                indent = " " * first_line_indent(lines, lineno)
+                newline = _line_ending(source_lines[lineno - 1])
+                repl = parts[0] + newline + "".join(f"{indent}{part}{newline}" for part in parts[1:])
+                edits.append((start, end, repl))
+    return _apply_edits(source, edits)
+
+def fix_source(source: str, path: str, selected: set[str]) -> tuple[str, int]:
+    "Fix source, returning new source and number of passes that changed it."
+    changes = 0
+    for _i in range(8):
+        fixed = _fix_source_once(source, path, selected)
+        if fixed == source: break
+        source, changes = fixed, changes + 1
+    return source, changes
 
 def check_source(source: str, path: str, check_unused: bool=True) -> list[tuple]:
     "Check source code string for style violations."
@@ -666,11 +928,10 @@ def check_source(source: str, path: str, check_unused: bool=True) -> list[tuple]
                 add_violation(violations, path, lineno, with_hint("semicolon statement separator",
                     "split into separate statements on separate lines"), [lines[lineno - 1]], suppressed)
     except tokenize.TokenError: pass
-    if tree.body and is_docstring_stmt(tree.body[0]):
-        check_single_line_docstring(source, lines, tree.body[0], path, violations, suppressed)
+    if tree.body and is_docstring_stmt(tree.body[0]): check_single_line_docstring(source, lines, tree.body[0], path, violations, suppressed)
     dataclass_fields = dataclass_annassigns(tree)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Dict) and len(node.keys) >= 3 and all(is_identifier_str(k) for k in node.keys):
+        if isinstance(node, ast.Dict) and len(node.keys) >= 3 and dict_keyword_keys(node):
             msg = with_hint("dict literal with 3+ identifier keys", "prefer dict(a=a, b=b, c=c) when keys are identifiers")
             add_violation(violations, path, node.lineno, msg, node_lines(source, lines, node), suppressed)
         if isinstance(node, ast.AnnAssign):
@@ -691,28 +952,25 @@ def check_source(source: str, path: str, check_unused: bool=True) -> list[tuple]
                     add_violation(violations, path, node.lineno, with_hint("inefficient multi-line from-import",
                         "condense to fewer lines"), import_lines, suppressed)
         has_doc = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body
-        if has_doc and is_docstring_stmt(node.body[0]):
-            check_single_line_docstring(source, lines, node.body[0], path, violations, suppressed)
+        if has_doc and is_docstring_stmt(node.body[0]): check_single_line_docstring(source, lines, node.body[0], path, violations, suppressed)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             check_multiline_sig(node, lines, path, violations, suppressed)
             if node.returns: check_annotation(node.returns, source, lines, path, violations, suppressed)
             for arg in node.args.args + node.args.kwonlyargs:
-                if arg.annotation: check_annotation(arg.annotation, source, lines, path, violations, suppressed)
+                if arg.annotation: check_annotation(arg.annotation, source, lines, path, violations, suppressed, check_nested=True)
             if node.args.vararg and node.args.vararg.annotation:
-                check_annotation(node.args.vararg.annotation, source, lines, path, violations, suppressed)
+                check_annotation(node.args.vararg.annotation, source, lines, path, violations, suppressed, check_nested=True)
             if node.args.kwarg and node.args.kwarg.annotation:
-                check_annotation(node.args.kwarg.annotation, source, lines, path, violations, suppressed)
+                check_annotation(node.args.kwarg.annotation, source, lines, path, violations, suppressed, check_nested=True)
             if node.args.posonlyargs:
                 for arg in node.args.posonlyargs:
-                    if arg.annotation: check_annotation(arg.annotation, source, lines, path, violations, suppressed)
+                    if arg.annotation: check_annotation(arg.annotation, source, lines, path, violations, suppressed, check_nested=True)
         if isinstance(node, ast.ClassDef): check_multiline_sig(node, lines, path, violations, suppressed)
         if isinstance(node, ast.Assign): check_multiline_expr(node.value, source, lines, path, violations, suppressed)
         if isinstance(node, ast.AugAssign): check_multiline_expr(node.value, source, lines, path, violations, suppressed)
         if isinstance(node, ast.Return): check_multiline_expr(node.value, source, lines, path, violations, suppressed)
-        if isinstance(node, ast.Expr) and not is_docstring_stmt(node):
-            check_multiline_expr(node.value, source, lines, path, violations, suppressed)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            check_suite("def", node, node.body, path, source, lines, violations, suppressed)
+        if isinstance(node, ast.Expr) and not is_docstring_stmt(node): check_multiline_expr(node.value, source, lines, path, violations, suppressed)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)): check_suite("def", node, node.body, path, source, lines, violations, suppressed)
         elif isinstance(node, ast.If):
             check_suite("if", node, node.body, path, source, lines, violations, suppressed)
             check_suite("else", node, node.orelse, path, source, lines, violations, suppressed)
@@ -734,6 +992,14 @@ def check_file(path: str) -> list[tuple]:
     "Check Python file for style violations."
     with open(path, encoding="utf-8") as f: source = f.read()
     return check_source(source, path)
+
+def fix_file(path: str, selected: set[str]) -> bool:
+    "Fix Python file in place."
+    with open(path, encoding="utf-8") as f: source = f.read()
+    fixed, changes = fix_source(source, path, selected)
+    if not changes: return False
+    with open(path, "w", encoding="utf-8") as f: f.write(fixed)
+    return True
 
 def _cell_source(cell) -> str:
     "Notebook cell source."
@@ -824,10 +1090,31 @@ def check_notebook(path: str) -> list[tuple]:
     _check_notebook_unused_imports(cells, path, violations)
     return violations
 
+def fix_notebook(path: str, selected: set[str]) -> bool:
+    "Fix notebook code cells in place."
+    with open(path, encoding="utf-8") as f: nb = json.load(f)
+    changed = False
+    for cell in nb.get("cells", []):
+        if cell.get("cell_type") != "code": continue
+        source = _cell_source(cell)
+        fixed, changes = fix_source(source, f"{path}:cell[{cell.get('id', 'unknown')}]", selected - {"unused-import"})
+        if not changes: continue
+        cell["source"] = fixed if isinstance(cell.get("source", []), str) else fixed.splitlines(True)
+        changed = True
+    if not changed: return False
+    with open(path, "w", encoding="utf-8") as f: json.dump(nb, f, ensure_ascii=False, indent=1)
+    with open(path, "a", encoding="utf-8") as f: f.write("\n")
+    return True
+
 def check_path(path: str) -> list[tuple]:
     "Check a single file (py or ipynb) for style violations."
     if path.endswith(".ipynb"): return check_notebook(path)
     return check_file(path)
+
+def fix_path(path: str, selected: set[str]) -> bool:
+    "Fix a single file."
+    if path.endswith(".ipynb"): return fix_notebook(path, selected)
+    return fix_file(path, selected)
 
 def _find_cfg_root(path: str) -> str | None:
     "Find nearest ancestor with pyproject.toml."
@@ -852,6 +1139,29 @@ def _cfg_skip_path_re(cfg: dict) -> str | None:
     "Load skip path regex from config."
     return cfg.get("skip-path-re")
 
+def _as_list(value) -> list[str]:
+    "Normalize config/CLI list values."
+    if value is None or value is False: return []
+    if value is True: return [ALL_RULES]
+    if isinstance(value, str): return [part.strip() for part in value.split(",") if part.strip()]
+    res = []
+    for item in value:
+        if item is None: continue
+        res += _as_list(item)
+    return res
+
+def _rule_set(*values) -> set[str]:
+    "Normalize rule list values."
+    return {item for value in values for item in _as_list(value)}
+
+def _fix_rule_set(enabled: bool, cli_rules, cfg: dict) -> set[str]:
+    "Rules selected for fixing."
+    if not enabled: return set()
+    rules = _rule_set(cli_rules)
+    if not rules: rules = _rule_set(cfg.get("fix"))
+    if not rules: rules = {ALL_RULES}
+    return SUPPORTED_FIX_RULES if ALL_RULES in rules else rules & SUPPORTED_FIX_RULES
+
 def main(argv: list[str]) -> int:
     "Main."
     import argparse
@@ -859,24 +1169,32 @@ def main(argv: list[str]) -> int:
     parser.add_argument("paths", nargs="*", default=["."], help="Files and/or directories to check")
     parser.add_argument("--skip-path", action="append", default=None, help="Path to skip (repeatable)")
     parser.add_argument("--skip-path-re", help="Regex to skip normalized paths (uses Python re.match)")
+    parser.add_argument("--ignore", action="append", default=None, help="Rule id to ignore (repeatable or comma-separated)")
+    parser.add_argument("--fix", action="store_true", help="Fix files in place before checking")
+    parser.add_argument("--fix-rule", action="append", default=None, help="Rule id to fix (repeatable or comma-separated)")
     args = parser.parse_args(argv[1:])
     cfg = load_config(_cfg_root(args.paths))
     if cfg.get("disabled"): return 0
     skip_pattern = args.skip_path_re or _cfg_skip_path_re(cfg)
     skip_path_re = re.compile(skip_pattern) if skip_pattern else None
     skip_paths = args.skip_path if args.skip_path is not None else _cfg_skip_paths(cfg)
+    ignored = _rule_set(cfg.get("ignore"), args.ignore)
+    fix_rules = _fix_rule_set(args.fix, args.fix_rule, cfg)
     all_violations = []
     seen = set()
     for root in args.paths:
         if os.path.isfile(root):
             if root in seen: continue
+            if fix_rules: fix_path(root, fix_rules)
             all_violations.extend(check_path(root))
             seen.add(root)
             continue
         for path in iter_py_files(root, skip_path_re, skip_paths):
             if path in seen: continue
+            if fix_rules: fix_path(path, fix_rules)
             all_violations.extend(check_path(path))
             seen.add(path)
+    all_violations = filter_violations(all_violations, ignored)
     for path, lineno, msg, lines in sorted(all_violations, key=lambda item: (item[0], item[1], item[2])):
         print(f"# {path}:{lineno}: {msg}")
         for line in lines: print(line)

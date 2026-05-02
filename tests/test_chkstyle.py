@@ -68,6 +68,12 @@ def test_chkstyle_skip_file(tmp_path):
         data = {"a": 1, "b": 2, "c": 3}
         """) == []
 
+def test_chkstyle_dict_literal_skips_invalid_kwargs(tmp_path):
+    assert not _has_msg(_msgs(_check_py(tmp_path, """
+        a = {"class": 1, "b": 2, "c": 3}
+        b = {"a": 1, "a": 2, "b": 3}
+        """)), "dict literal with 3+ identifier keys")
+
 def test_chkstyle_allows_multiline_strings(tmp_path):
     assert _check_py(tmp_path, '''
         value = """
@@ -117,12 +123,39 @@ def test_chkstyle_allows_trailing_comments(tmp_path):
             "two"]   # second
         """) == []
 
+def test_chkstyle_allows_standalone_comments_in_multiline_expr(tmp_path):
+    assert not _has_msg(_msgs(_check_py(tmp_path, """
+        result = call(
+            # explain
+            a,
+            b)
+        """)), "inefficient multiline expression")
+
 def test_chkstyle_if_else_single_statement(tmp_path):
     assert _has_msg(_msgs(_check_py(tmp_path, """
         if branch == expected:
             print(f"ok")
         else:
             print(f"not ok")
+        """)), "if single-statement body not one-liner")
+
+def test_chkstyle_single_statement_body_allows_comments(tmp_path):
+    assert not _has_msg(_msgs(_check_py(tmp_path, """
+        if ready:  # explain
+            return True
+
+        if waiting:
+            # explain
+            return False
+
+        if done:
+            return None  # explain
+        """)), "single-statement body not one-liner")
+
+def test_chkstyle_single_statement_body_allows_long_combined_line(tmp_path):
+    assert not _has_msg(_msgs(_check_py(tmp_path, """
+        if ready:
+            return some_really_long_function_name_that_would_make_the_combined_line_too_long(alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda_arg, mu)
         """)), "if single-statement body not one-liner")
 
 def test_chkstyle_main_accepts_file_path(tmp_path):
@@ -133,6 +166,16 @@ def test_chkstyle_main_shows_style_guidance_on_violations(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Style guidance: fix violations in the spirit of the fast.ai style guide." in out
     assert "Never apply a change that satisfies chkstyle but makes the code less clear." in out
+
+def test_chkstyle_ignore_config_and_cli(tmp_path, capsys):
+    p = _write(tmp_path, "t.py", "x: int = 1\n")
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.chkstyle]
+        ignore = ["lhs-assignment-annotation"]
+        """), encoding="utf-8")
+    assert chkstyle.main(["chkstyle", str(p)]) == 0
+    assert "found 0 potential violation(s)" in capsys.readouterr().out
+    assert chkstyle.main(["chkstyle", "--ignore", "lhs-assignment-annotation", str(p)]) == 0
 
 def test_chkstyle_main_accepts_multiple_paths(tmp_path, capsys):
     p1 = _write(tmp_path, "a.py", "x: int = 1\n")
@@ -250,6 +293,94 @@ def test_chkstyle_subdir_target_uses_parent_pyproject(monkeypatch, tmp_path, cap
     out = capsys.readouterr().out
     assert str(keep_file.relative_to(tmp_path)) in out and str(skip_file.relative_to(tmp_path)) not in out
 
+def test_chkstyle_fix_uses_config_allowlist(tmp_path):
+    p = _write(tmp_path, "t.py", """
+        data = {"a": 1, "b": 2, "c": 3}
+        x: int = 1
+        """)
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.chkstyle]
+        fix = ["dict-literal"]
+        """), encoding="utf-8")
+    assert chkstyle.main(["chkstyle", "--fix", str(p)]) == 1
+    fixed = p.read_text(encoding="utf-8")
+    assert "data = dict(a=1, b=2, c=3)" in fixed
+    assert "x: int = 1" in fixed
+
+def test_chkstyle_fix_lhs_annotation_preserves_dataclass_and_bare_annotations(tmp_path):
+    p = _write(tmp_path, "t.py", """
+        from dataclasses import dataclass
+
+        @dataclass
+        class A:
+            x: int = 1
+
+        y: int
+        z: int = 2
+        """)
+    assert chkstyle.main(["chkstyle", "--fix", "--fix-rule", "lhs-assignment-annotation", str(p)]) == 1
+    fixed = p.read_text(encoding="utf-8")
+    assert "x: int = 1" in fixed
+    assert "y: int" in fixed
+    assert "z = 2" in fixed
+    assert "z: int = 2" not in fixed
+
+def test_chkstyle_fix_common_rules(tmp_path):
+    p = _write(tmp_path, "t.py", '''
+        import os
+        import sys
+
+        def f(x: list[list[int]]):
+            """doc"""
+            return dict(
+                a=1,
+                b=2)
+
+        if ready:
+            print(True)
+        ''')
+    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "consecutive-short-imports", "--fix-rule", "nested-generics",
+        "--fix-rule", "single-line-docstring", "--fix-rule", "single-statement-body", "--fix-rule", "inefficient-multiline-expression", str(p)])
+    fixed = p.read_text(encoding="utf-8")
+    assert "import os, sys" in fixed
+    assert "def f(x: list[list]):" in fixed
+    assert "'doc'" in fixed
+    assert "return dict(a=1, b=2)" in fixed
+    assert "if ready: print(True)" in fixed
+
+def test_chkstyle_fix_imports_brackets_indent_and_semicolon(tmp_path):
+    p = _write(tmp_path, "t.py", """
+        import os
+        import sys
+        from os import (
+            path,
+            environ,
+        )
+        data = {"a": 1, "b": 2, "c": 3}
+        result = call(
+                alpha,
+                beta,
+        )
+        a = 1; b = 2
+        print(path, environ, sys.version)
+        """)
+    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "unused-import", "--fix-rule", "multi-line-from-import",
+        "--fix-rule", "closing-bracket", "--fix-rule", "continuation-indent", "--fix-rule", "semicolon", "--fix-rule", "dict-literal", str(p)])
+    fixed = p.read_text(encoding="utf-8")
+    assert "import os" not in fixed
+    assert "import sys" in fixed
+    assert "from os import path, environ" in fixed
+    assert "data = dict(a=1, b=2, c=3)" in fixed
+    assert "    alpha,\n    beta,)" in fixed
+    assert "a = 1\nb = 2" in fixed
+
+def test_chkstyle_allows_standalone_closer_with_comment(tmp_path):
+    assert not _has_msg(_msgs(_check_py(tmp_path, """
+        result = call(
+            alpha,
+        )  # explain
+        """)), "closing bracket on its own line")
+
 def test_chkstyle_allows_multiline_def_with_docments(tmp_path):
     assert _check_py(tmp_path, """
         def ws_clone_cli(
@@ -308,6 +439,11 @@ def test_chkstyle_flags_unused_import(tmp_path):
         import os
         """))
     assert _has_msg(msgs, "unused import: os"), msgs
+
+def test_chkstyle_flags_bare_lhs_annotation(tmp_path):
+    assert _has_msg(_msgs(_check_py(tmp_path, """
+        x: int
+        """)), "lhs assignment annotation")
 
 def test_chkstyle_allows_import_used_in_nested_function(tmp_path):
     assert _check_py(tmp_path, """
@@ -455,13 +591,22 @@ def test_chkstyle_pragma_in_string_not_suppressed(tmp_path):
 
 def test_chkstyle_messages_include_hints(tmp_path):
     msgs = _msgs(_check_py(tmp_path, """
-        x: list[list[int]] = [
+        def f(x: list[list[int]]): return x
+        y: list[int] = [
             1,
             2,
         ]
         """))
     assert any(msg.startswith("nested generics depth 2") and "hint:" in msg for msg in msgs), msgs
     assert any(msg.startswith("inefficient multiline expression") and "hint:" in msg for msg in msgs), msgs
+
+def test_chkstyle_nested_generics_only_parameter_annotations(tmp_path):
+    msgs = _msgs(_check_py(tmp_path, """
+        x: list[list[int]] = []
+        def f() -> list[list[int]]: return []
+        """))
+    assert not _has_msg(msgs, "nested generics depth 2"), msgs
+    assert _has_msg(msgs, "lhs assignment annotation"), msgs
 
 def test_chkstyle_core_py_no_violations():
     "core.py should have no style violations."

@@ -86,6 +86,12 @@ Check multiple files/folders in one run:
 chkstyle path/to/code tests unit.py
 ```
 
+Fix selected mechanical violations in place:
+```bash
+chkstyle --fix path/to/code
+chkstyle --fix --fix-rule dict-literal --fix-rule single-statement-body path/to/code
+```
+
 Skip paths matching a regex. This uses Python `re.match`, so add `^` / `$` yourself when you want exact matches:
 ```bash
 chkstyle --skip-path-re 'test|migrations|vendor|src/gen'
@@ -116,14 +122,16 @@ Configure `chkstyle` in your `pyproject.toml`:
 [tool.chkstyle]
 skip_paths = ["vendor", "src/generated"]
 skip-path-re = "test|migrations|vendor|src/gen"
+ignore = ["line-too-long"]
+fix = ["dict-literal", "single-statement-body"]
 ```
 
-Command-line arguments override config file settings.
+Command-line skip arguments override config values. `--ignore` adds rule IDs to configured ignores; `--fix-rule` selects the fixer rules for that run when provided.
 
 ## What It Checks
 
 ### `dict literal with 3+ identifier keys`
-Use `dict()` for keyword-like keys—it's easier to scan and produces cleaner diffs.
+Use `dict()` for keyword-like keys when all keys can be valid Python keyword arguments—it's easier to scan and produces cleaner diffs.
 
 ```python
 # Bad
@@ -134,7 +142,7 @@ payload = dict(host=host, port=port, timeout=timeout)
 ```
 
 ### `single-statement body not one-liner`
-If the body is one simple statement, keep it on the header line.
+If the body is one simple statement, keep it on the header line when the result is short enough and no comments need to move.
 
 ```python
 # Bad
@@ -257,7 +265,7 @@ result = call(a, b, c)
 ```
 
 ### `lhs assignment annotation`
-Avoid `x: int = 1` in normal code. Put type hints on function parameters and return values instead. The exception is dataclass fields, where annotations are required.
+Avoid `x: int = 1` and bare `x: int` annotations in normal code. Put type hints on function parameters and return values instead. Dataclass and BaseModel fields are exempt, since their annotations are part of the class contract. Auto-fixing only rewrites value-bearing assignments like `x: int = 1`.
 
 ```python
 # Bad
@@ -269,15 +277,15 @@ def process(x: int, name: str) -> Result: ...
 ```
 
 ### `nested generics depth >= 2`
-Keep type annotations simple. Deep nesting makes them hard to read.
+Keep parameter annotations simple. Deep nesting makes them hard to read.
 
 ```python
 # Bad
-items: list[dict[str, list[int]]]
+def process(items: list[dict[str, list[int]]]): ...
 
 # Good
 Payload = dict[str, list[int]]
-items: list[Payload]
+def process(items: list[Payload]): ...
 ```
 
 ## Opting Out
