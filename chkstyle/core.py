@@ -58,8 +58,7 @@ def _parse_skip_paths(skip_paths) -> tuple[set, set]:
         if not item: continue
         path = _norm_relpath(str(item).strip())
         if not path: continue
-        if "/" in path:
-            rel_paths.add(path)
+        if "/" in path: rel_paths.add(path)
         else: names.add(path)
     return names, rel_paths
 
@@ -93,8 +92,7 @@ def dict_keyword_keys(node) -> list[str] | None:
         keys.append(key.value)
     return keys if len(keys) == len(set(keys)) else None
 
-def is_docstring_stmt(stmt) -> bool:
-    return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)
+def is_docstring_stmt(stmt) -> bool: return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)
 
 def node_lines(source: str, lines: list[str], node) -> list[str]:
     seg = ast.get_source_segment(source, node)
@@ -113,8 +111,7 @@ def first_line_indent(lines: list[str], lineno: int | None) -> int:
     line = lines[lineno - 1]
     return len(line) - len(line.lstrip())
 
-def combined_len(seg_lines: list[str], indent: int) -> int:
-    return sum(len(line.strip()) for line in seg_lines) + indent
+def combined_len(seg_lines: list[str], indent: int) -> int: return sum(len(line.strip()) for line in seg_lines) + indent
 
 def _has_trailing_comment(line: str) -> bool:
     "Check if line has a trailing comment (# not at start of stripped content)."
@@ -127,8 +124,7 @@ def _has_comment(line: str) -> bool:
     stripped = line.strip()
     return stripped.startswith("#") or _has_trailing_comment(line)
 
-def line_indent(line: str) -> int:
-    return len(line) - len(line.lstrip())
+def line_indent(line: str) -> int: return len(line) - len(line.lstrip())
 
 def is_inefficient_multiline(seg_lines: list[str], indent: int) -> bool:
     if len(seg_lines) <= 1: return False
@@ -254,17 +250,14 @@ def _sym_scope_kind(tab) -> str:
     kind = tab.get_type()
     return "lambda" if kind == "function" and tab.get_name() == "lambda" else kind
 
-def _scope_key(kind: str, name: str, lineno: int) -> tuple[str, str, int]:
-    return kind, name, lineno
+def _scope_key(kind: str, name: str, lineno: int) -> tuple[str, str, int]: return kind, name, lineno
 
 def _scope_bindings(tab) -> set[str]:
     return {sym.get_name() for sym in tab.get_symbols() if sym.is_local() or sym.is_imported() or sym.is_parameter() or sym.is_assigned() or sym.is_namespace()}
 
-def _scope_globals(tab) -> set[str]:
-    return {sym.get_name() for sym in tab.get_symbols() if hasattr(sym, "is_declared_global") and sym.is_declared_global()}
+def _scope_globals(tab) -> set[str]: return {sym.get_name() for sym in tab.get_symbols() if hasattr(sym, "is_declared_global") and sym.is_declared_global()}
 
-def _scope_nonlocals(tab) -> set[str]:
-    return {sym.get_name() for sym in tab.get_symbols() if sym.is_nonlocal()}
+def _scope_nonlocals(tab) -> set[str]: return {sym.get_name() for sym in tab.get_symbols() if sym.is_nonlocal()}
 
 def _build_scope_tree(tab, parent=None):
     "Build scope metadata tree from symtable."
@@ -341,8 +334,7 @@ def _import_name(alias, from_import: bool=False) -> str:
     if alias.asname: return alias.asname
     return alias.name if from_import else alias.name.split(".", 1)[0]
 
-def _base_path(path: str) -> str:
-    return path.split(":cell[", 1)[0]
+def _base_path(path: str) -> str: return path.split(":cell[", 1)[0]
 
 class _UnusedImportVisitor(ast.NodeVisitor):
     "Track imported names that are referenced."
@@ -596,8 +588,7 @@ def _node_edit(ctx: SourceCtx, node, repl: str) -> tuple[int, int, str]:
     "Edit replacing an AST node."
     return *_node_span(node, ctx.offsets), repl
 
-def _alias_src(alias) -> str:
-    return alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
+def _alias_src(alias) -> str: return alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
 
 def _from_import_src(node, names: list | None = None) -> str:
     "Single-line from import source."
@@ -957,8 +948,7 @@ def _cell_source(cell) -> str:
     source = cell.get("source", [])
     return source if isinstance(source, str) else "".join(source)
 
-def _is_export_cell(source: str) -> bool:
-    return bool(NB_EXPORT_RE.search(source))
+def _is_export_cell(source: str) -> bool: return bool(NB_EXPORT_RE.search(source))
 
 def _notebook_cells(nb, path: str) -> list[dict]:
     "Notebook code cell metadata."
@@ -1080,8 +1070,7 @@ def _cfg_root(paths: list[str]) -> str:
     if len(paths) != 1: return "."
     return _find_cfg_root(paths[0]) or (paths[0] if os.path.isdir(paths[0]) else ".")
 
-def _cfg_skip_paths(cfg: dict) -> list[str]:
-    return cfg.get("skip_paths") or cfg.get("skip-paths") or []
+def _cfg_skip_paths(cfg: dict) -> list[str]: return cfg.get("skip_paths") or cfg.get("skip-paths") or []
 
 def _cfg_skip_path_re(cfg: dict) -> str | None:
     "Load skip path regex from config."
