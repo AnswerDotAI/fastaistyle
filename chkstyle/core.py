@@ -212,13 +212,13 @@ def _has_pragma(line, pragma):
     comment_idx = line.find('#')
     return comment_idx != -1 and comment_idx < idx
 
-def string_token_spans(source: str, lines: list[str]) -> dict:
-    "Return line->column spans covered by string tokens."
+def ignored_line_len_token_spans(source: str, lines: list[str]) -> dict:
+    "Return line->column spans ignored for line length."
     spans = {}
     try: tokens = tokenize.generate_tokens(io.StringIO(source).readline)
     except tokenize.TokenError: return spans
     for tok in tokens:
-        if tok.type != tokenize.STRING: continue
+        if tok.type not in {tokenize.STRING, tokenize.COMMENT}: continue
         srow, scol = tok.start
         erow, ecol = tok.end
         if not (1 <= srow <= len(lines) and 1 <= erow <= len(lines)): continue
@@ -572,7 +572,7 @@ def _source_ctx(source: str, path: str) -> tuple[SourceCtx | None, list[Issue]]:
     source_lines = source.splitlines(True)
     suppressed = suppressed_lines(lines) | _all_assign_lines(tree)
     offsets = _line_offsets(source)
-    ctx = SourceCtx(source, path, lines, source_lines, tree, offsets, suppressed, string_token_spans(source, lines),
+    ctx = SourceCtx(source, path, lines, source_lines, tree, offsets, suppressed, ignored_line_len_token_spans(source, lines),
         token_line_infos(source), dataclass_annassigns(tree))
     return ctx, []
 

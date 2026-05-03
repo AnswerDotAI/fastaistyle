@@ -91,6 +91,16 @@ def test_chkstyle_long_line_with_short_string_still_fails(tmp_path):
 def test_chkstyle_long_line_mostly_string_is_exempt(tmp_path):
     assert _check_py(tmp_path, f'msg = "{"x" * 180}"\n') == []
 
+def test_chkstyle_long_comments_are_exempt(tmp_path):
+    long_comment = "# " + "x" * 220
+    trailing_comment = "x = 1  # " + "y" * 220
+    assert not _has_msg(_msgs(_check_py(tmp_path, f"{long_comment}\n{trailing_comment}\n")), "line >160 chars")
+
+def test_chkstyle_long_code_before_comment_still_fails(tmp_path):
+    code = "some_really_long_variable_name_that_keeps_going_and_going_and_going = some_really_long_func_name_that_keeps_going_and_going_and_going(another_really_long_variable_name_that_keeps_going_and_going_and_going)"
+    msgs = _msgs(_check_py(tmp_path, f"{code}  # comment\n"))
+    assert _has_msg(msgs, "line >160 chars"), msgs
+
 def test_chkstyle_allows_decorated_inner_defs(tmp_path):
     assert _check_py(tmp_path, """
         def dec(f): return f
