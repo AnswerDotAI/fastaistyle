@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.0.17
+
+### New Features
+
+- Refactor rule handling: store rule id on Issue/violation tuples and add `COMBINE_WIDTH` for fixes ([#17](https://github.com/AnswerDotAI/fastaistyle/issues/17))
+- Exempt long comments from line-length check ([#16](https://github.com/AnswerDotAI/fastaistyle/issues/16))
+
+
 ## 0.0.16
 
 ### New Features
