@@ -19,7 +19,7 @@ def _write_nb(tmp_path, name, cells):
 
 def _check_py(tmp_path, content): return chkstyle.check_file(str(_write(tmp_path, "t.py", content)))
 def _check_nb(tmp_path, cells): return chkstyle.check_notebook(str(_write_nb(tmp_path, "t.ipynb", cells)))
-def _msgs(violations): return {msg for _p, _l, msg, _lines in violations}
+def _msgs(violations): return {v[3] for v in violations}
 def _has_msg(msgs, prefix): return any(msg.startswith(prefix) for msg in msgs)
 
 def test_chkstyle_reports_expected_violations(tmp_path):
@@ -167,6 +167,34 @@ def test_chkstyle_single_statement_body_allows_long_combined_line(tmp_path):
         if ready:
             return some_really_long_function_name_that_would_make_the_combined_line_too_long(alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda_arg, mu)
         """)), "if single-statement body not one-liner")
+
+def test_chkstyle_single_statement_body_combined_over_140_not_flagged(tmp_path):
+    assert not _has_msg(_msgs(_check_py(tmp_path, f"""
+        if {"x" * 93}:
+            return_value = {"y" * 40}
+        """)), "if single-statement body not one-liner")
+
+def test_chkstyle_single_statement_body_combined_at_most_140_flagged(tmp_path):
+    assert _has_msg(_msgs(_check_py(tmp_path, f"""
+        if {"x" * 80}:
+            return_value = {"y" * 40}
+        """)), "if single-statement body not one-liner")
+
+def test_chkstyle_fix_single_statement_body_never_exceeds_140(tmp_path):
+    p = _write(tmp_path, "t.py", f"""
+        if {"x" * 93}:
+            return_value = {"y" * 40}
+        """)
+    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "single-statement-body", str(p)])
+    assert all(len(line) <= 140 for line in p.read_text(encoding="utf-8").splitlines())
+
+def test_chkstyle_violations_include_rule_id(tmp_path):
+    violations = _check_py(tmp_path, "x: int = 1\n")
+    assert violations[0][2] == "lhs-assignment-annotation"
+
+def test_chkstyle_ignore_single_statement_body_by_rule_id(tmp_path):
+    p = _write(tmp_path, "t.py", "if True:\n    y = 1\n")
+    assert chkstyle.main(["chkstyle", "--ignore", "single-statement-body", str(p)]) == 0
 
 def test_chkstyle_main_accepts_file_path(tmp_path):
     assert chkstyle.main(["chkstyle", str(_write(tmp_path, "t.py", "x: int = 1\n"))]) == 1
@@ -553,7 +581,7 @@ def test_chkstyle_notebook_reports_violations(tmp_path):
 def test_chkstyle_notebook_shows_cell_id_in_path(tmp_path):
     violations = _check_nb(tmp_path, ["x: int = 1\n"])
     assert len(violations) == 1
-    vpath, lineno, msg, lines = violations[0]
+    vpath, lineno, rule, msg, lines = violations[0]
     assert ":cell[cell0]" in vpath and lineno == 1
 
 def test_chkstyle_notebook_shows_line_within_cell(tmp_path):
@@ -634,4 +662,4 @@ def test_chkstyle_core_py_no_violations():
     import pathlib
     core_path = pathlib.Path(__file__).parent.parent / "chkstyle" / "core.py"
     violations = chkstyle.check_file(str(core_path))
-    assert violations == [], f"Unexpected violations in core.py: {[(l, m) for _, l, m, _ in violations]}"
+    assert violations == [], f"Unexpected violations in core.py: {[v[:4] for v in violations]}"
