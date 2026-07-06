@@ -489,6 +489,24 @@ def test_chkstyle_allows_dataclass_field_semicolons(tmp_path):
     assert not _has_msg(msgs, "semicolon statement separator"), msgs
     assert not _has_msg(msgs, "lhs assignment annotation"), msgs
 
+def test_chkstyle_trailing_semicolons(tmp_path):
+    "Trailing `;` separates nothing (it's Jupyter's output-suppression idiom) - only real separators count; and splitting a cell's last line (which has no line ending) must still insert newlines."
+    assert not _has_msg(_msgs(_check_nb(tmp_path, ["s.run_cell('a=1');"])), "semicolon statement separator")
+    assert not _has_msg(_msgs(_check_py(tmp_path, "x = print();\n")), "semicolon statement separator")
+    assert _has_msg(_msgs(_check_py(tmp_path, "a = 1; b = 2;\n")), "semicolon statement separator")
+    p = _write_nb(tmp_path, "t.ipynb", ["#| hide\nimport nbdev; nbdev.nbdev_export()"])
+    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "semicolon", str(p)])
+    nb = json.loads(p.read_text(encoding="utf-8"))
+    src = nb["cells"][0]["source"]
+    if not isinstance(src, str): src = "".join(src)
+    assert src == "#| hide\nimport nbdev\nnbdev.nbdev_export()", repr(src)
+
+def test_chkstyle_skips_ipython_magics(tmp_path):
+    "IPython `!`/`%` lines and `%%` cell magics aren't Python: no syntax errors, but the cell's real code is still checked."
+    msgs = _msgs(_check_nb(tmp_path, ["!exec_nb --help", "%%bash\nls | wc -l", "%time x = 1\ny: int = 2"]))
+    assert not _has_msg(msgs, "syntax error"), msgs
+    assert _has_msg(msgs, "lhs assignment annotation"), msgs
+
 def test_chkstyle_flags_bare_lhs_annotation(tmp_path):
     assert _has_msg(_msgs(_check_py(tmp_path, """
         x: int

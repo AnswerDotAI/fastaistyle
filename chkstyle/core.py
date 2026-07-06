@@ -797,6 +797,9 @@ def _semicolon_issues(ctx: SourceCtx) -> list[Issue]:
         if tok.type == tokenize.OP and tok.string == ";": semis.setdefault(tok.start[0], []).append(tok.start[1])
     for lineno, cols in semis.items():
         line = ctx.lines[lineno - 1]
+        # A trailing `;` separates nothing (in notebook cells it's the output-suppression idiom) - only count separators with a statement after them
+        cols = [c for c in cols if line[c + 1:].strip() and not line[c + 1:].lstrip().startswith("#")]
+        if not cols: continue
         if _dataclass_field_semicolon_line(ctx, lineno): continue
         if line.lstrip().startswith("class "): continue
         edit = None
@@ -805,7 +808,9 @@ def _semicolon_issues(ctx: SourceCtx) -> list[Issue]:
             if all(parts):
                 start,end = _line_span(ctx.source_lines, ctx.offsets, lineno)
                 indent, newline = " " * first_line_indent(ctx.lines, lineno), _line_ending(ctx.source_lines[lineno - 1])
-                edit = start, end, parts[0] + newline + "".join(f"{indent}{part}{newline}" for part in parts[1:])
+                # `newline` is empty on a cell's final line - the separator between parts must still be a real newline
+                sep = newline or "\n"
+                edit = start, end, sep.join([parts[0]] + [indent + part for part in parts[1:]]) + newline
         msg = with_hint("semicolon statement separator", "split into separate statements on separate lines")
         _append_issue(issues, _new_issue(ctx, "semicolon", lineno, msg, [line], edit))
     return issues
@@ -912,6 +917,12 @@ def _cell_source(cell) -> str:
 
 def _is_export_cell(source: str) -> bool: return bool(NB_EXPORT_RE.search(source))
 
+_IPY_LINE_RE = re.compile(r"(\s*)([!%?].*)$")
+
+def _neutralize_ipython(lines: list[str]) -> list[str]:
+    "Comment out IPython `!shell`/`%magic`/`?help` lines so cells parse as Python; `pass` keeps indented blocks non-empty"
+    return [f"{m[1]}pass  # {m[2]}" if (m := _IPY_LINE_RE.match(l)) else l for l in lines]
+
 def _notebook_cells(nb, path: str) -> list[dict]:
     "Notebook code cell metadata."
     cells = []
@@ -919,8 +930,10 @@ def _notebook_cells(nb, path: str) -> list[dict]:
         if cell.get("cell_type") != "code": continue
         source = _cell_source(cell)
         if not source.strip(): continue
+        if source.lstrip().startswith("%%"): continue  # cell magic: the whole cell is non-Python
         cell_id = cell.get("id", "unknown")
-        lines = source.splitlines()
+        lines = _neutralize_ipython(source.splitlines())
+        source = "\n".join(lines)
         cells.append(dict(id=cell_id, path=f"{path}:cell[{cell_id}]", source=source, lines=lines, export=_is_export_cell(source),
             skip=should_skip_file(lines)))
     return cells
