@@ -618,6 +618,31 @@ def test_chkstyle_notebook_skip_pragma(tmp_path):
 def test_chkstyle_notebook_ignore_pragma(tmp_path):
     assert _check_nb(tmp_path, ["x: int = 1  # chkstyle: ignore\n"]) == []
 
+def test_chkstyle_notebook_flags_mixed_imports_and_code(tmp_path):
+    violations = _check_nb(tmp_path, ["import os\nprint(os.getcwd())\n"])
+    assert len(violations) == 1
+    vpath, lineno, rule, msg, lines = violations[0]
+    assert rule == "mixed-imports" and lineno == 1 and "cell0" in vpath
+    assert _has_msg({msg}, "cell mixes imports and other code")
+    violations = _check_nb(tmp_path, ["# setup\nx = 1\nfrom pathlib import PurePath\n"])
+    assert [v[2] for v in violations] == ["mixed-imports"] and violations[0][1] == 3
+
+def test_chkstyle_notebook_mixed_imports_allowed_cases(tmp_path):
+    for cells in (["import os, sys\n"],  # imports only
+            ["import os\n", "print(os.getcwd())\n"],  # separate cells
+            ["#| export\nimport os\nprint(os.getcwd())\n"],  # exported cells exempt
+            ["#| exec_doc\nimport os\nprint(os.getcwd())\n"],  # exec_doc exempt
+            ["#| eval: false\nimport os\nprint(os.getcwd())\n"],  # eval false exempt
+            ["import nbdev\nnbdev_export()\n"],  # nbdev_export cell exempt
+            ["try: import foo\nexcept ImportError: foo=None\nprint(1)\n"],  # try-import allowed
+            ["def f():\n    import os\n    return os.getcwd()\nprint(f())\n"],  # import in def allowed
+            ["import os\ndef f(): return os.getcwd()\n"]):  # import + def, no top-level code
+        assert "mixed-imports" not in {v[2] for v in _check_nb(tmp_path, cells)}, cells
+
+def test_chkstyle_notebook_mixed_imports_ignore_pragma(tmp_path):
+    cells = ["import os  # chkstyle: ignore\nprint(os.getcwd())\n"]
+    assert "mixed-imports" not in {v[2] for v in _check_nb(tmp_path, cells)}
+
 def test_chkstyle_check_path_dispatches_correctly(tmp_path):
     py_path, nb_path = _write(tmp_path, "t.py", "x: int = 1\n"), _write_nb(tmp_path, "t.ipynb", ["y: int = 2\n"])
     py_v, nb_v = chkstyle.check_path(str(py_path)), chkstyle.check_path(str(nb_path))

@@ -9,6 +9,7 @@ MAX_LINE_LEN = 160
 COMBINE_WIDTH = 140  # max length for lines created by joining/condensing
 UNUSED_IMPORT_HINT = "remove unused imports; re-exports belong in `__all__` or package `__init__.py`"
 NB_EXPORT_RE = re.compile(r"^\s*#\|\s*exports?\b", re.M)
+NB_MIX_EXEMPT_RE = re.compile(r"^\s*#\|\s*(?:exports?|exporti|exec_doc|eval:\s*(?i:false))\b", re.M)
 ALL_RULES = "all"
 SUPPORTED_FIX_RULES = set("consecutive-short-imports continuation-indent closing-bracket dict-literal inefficient-multiline-expression "
     "lhs-assignment-annotation multi-line-from-import nested-generics semicolon single-line-docstring "
@@ -993,12 +994,26 @@ def _check_notebook_unused_imports(cells: list[dict], path: str, violations: lis
             msg = with_hint(f"unused import: {', '.join(dead)}", UNUSED_IMPORT_HINT)
             violations.append((cell_path, lineno, "unused-import", msg, node_src))
 
+def _check_notebook_mixed_imports(cells: list[dict], violations: list[tuple]):
+    "Flag non-exported cells mixing top-level imports with other code (nbdev's mixed imports+computations warning)."
+    for cell in cells:
+        if cell["skip"] or "nbdev_export()" in cell["source"] or NB_MIX_EXEMPT_RE.search(cell["source"]): continue
+        try: tree = ast.parse(cell["source"], filename=cell["path"])
+        except SyntaxError: continue
+        imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+        if not imports or not any(isinstance(node, (ast.Expr, ast.Assign)) for node in tree.body): continue
+        lineno = imports[0].lineno
+        if lineno in suppressed_lines(cell["lines"]): continue
+        msg = with_hint("cell mixes imports and other code", "put imports in their own cell")
+        violations.append((cell["path"], lineno, "mixed-imports", msg, [cell["lines"][lineno - 1]]))
+
 def check_notebook(path: str) -> list[tuple]:
     "Check Jupyter notebook for style violations."
     with open(path, encoding="utf-8") as f: nb = json.load(f)
     cells = _notebook_cells(nb, path)
     violations = [v for cell in cells for v in check_source(cell["source"], cell["path"], check_unused=False)]
     _check_notebook_unused_imports(cells, path, violations)
+    _check_notebook_mixed_imports(cells, violations)
     return violations
 
 def fix_notebook(path: str, selected: set[str]) -> bool:

@@ -211,6 +211,22 @@ Imports named in a simple static `__all__` count as used. Package `__init__.py` 
 
 For notebooks, `unused import` is checked across `#| export` / `#| exports` cells as one exported module. If an exported-cell import is only referenced from non-exported cells, `chkstyle` asks you to move it into a non-exported imports cell, recommending the first non-exported cell that already has imports when it can find one.
 
+### `cell mixes imports and other code`
+Notebooks only. In nbdev, the docs build runs every non-exported cell that contains an import, so mixing imports with other code in one cell either breaks the build or runs code at doc time. This is the same rule nbdev's own "mix of imports and computations" warning uses. Put imports in their own cell.
+
+```python
+# Bad (one cell)
+import some_module
+some_module.something()
+
+# Good (two cells)
+import some_module
+
+some_module.something()
+```
+
+Only top-level statements count, so `try: import foo` blocks and imports inside function definitions are fine. Cells with `#| export`, `#| exports`, `#| exporti`, `#| exec_doc`, or `#| eval: false` directives are exempt, as are cells calling `nbdev_export()`.
+
 ### `closing bracket on its own line`
 Don't leave a bare closing `)`, `]`, or `}` on a line by itself.
 
