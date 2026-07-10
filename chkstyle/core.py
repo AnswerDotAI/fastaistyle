@@ -192,13 +192,16 @@ def _has_pragma(line, pragma):
     comment_idx = line.find('#')
     return comment_idx != -1 and comment_idx < idx
 
+_LEN_EXEMPT_TOKS = {tokenize.STRING, tokenize.COMMENT} | {v for t in ('FSTRING_START', 'FSTRING_MIDDLE', 'FSTRING_END') if (v := getattr(tokenize, t, None))}
+
+
 def ignored_line_len_token_spans(source: str, lines: list[str]) -> dict:
     "Return line->column spans ignored for line length."
     spans = {}
     try: tokens = tokenize.generate_tokens(io.StringIO(source).readline)
     except tokenize.TokenError: return spans
     for tok in tokens:
-        if tok.type not in {tokenize.STRING, tokenize.COMMENT}: continue
+        if tok.type not in _LEN_EXEMPT_TOKS: continue
         srow, scol = tok.start
         erow, ecol = tok.end
         if not (1 <= srow <= len(lines) and 1 <= erow <= len(lines)): continue

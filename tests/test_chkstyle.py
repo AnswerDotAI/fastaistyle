@@ -91,6 +91,9 @@ def test_chkstyle_long_line_with_short_string_still_fails(tmp_path):
 def test_chkstyle_long_line_mostly_string_is_exempt(tmp_path):
     assert _check_py(tmp_path, f'msg = "{"x" * 180}"\n') == []
 
+def test_chkstyle_long_fstring_line_is_exempt(tmp_path):
+    assert _check_py(tmp_path, f'msg = f"prefix {{x}} {"y" * 180}"\n') == []
+
 def test_chkstyle_long_comments_are_exempt(tmp_path):
     long_comment = "# " + "x" * 220
     trailing_comment = "x = 1  # " + "y" * 220
