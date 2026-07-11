@@ -939,7 +939,7 @@ def _notebook_cells(nb, path: str) -> list[dict]:
         lines = _neutralize_ipython(source.splitlines())
         source = "\n".join(lines)
         cells.append(dict(id=cell_id, path=f"{path}:cell[{cell_id}]", source=source, lines=lines, export=_is_export_cell(source),
-            skip=should_skip_file(lines)))
+            skip=should_skip_file(lines) or "nbdev_export()" in source))
     return cells
 
 def _combine_notebook_cells(cells: list[dict]) -> tuple[str, dict]:
@@ -1000,7 +1000,7 @@ def _check_notebook_unused_imports(cells: list[dict], path: str, violations: lis
 def _check_notebook_mixed_imports(cells: list[dict], violations: list[tuple]):
     "Flag non-exported cells mixing top-level imports with other code (nbdev's mixed imports+computations warning)."
     for cell in cells:
-        if cell["skip"] or "nbdev_export()" in cell["source"] or NB_MIX_EXEMPT_RE.search(cell["source"]): continue
+        if cell["skip"] or NB_MIX_EXEMPT_RE.search(cell["source"]): continue
         try: tree = ast.parse(cell["source"], filename=cell["path"])
         except SyntaxError: continue
         imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
@@ -1014,7 +1014,7 @@ def check_notebook(path: str) -> list[tuple]:
     "Check Jupyter notebook for style violations."
     with open(path, encoding="utf-8") as f: nb = json.load(f)
     cells = _notebook_cells(nb, path)
-    violations = [v for cell in cells for v in check_source(cell["source"], cell["path"], check_unused=False)]
+    violations = [v for cell in cells if not cell["skip"] for v in check_source(cell["source"], cell["path"], check_unused=False)]
     _check_notebook_unused_imports(cells, path, violations)
     _check_notebook_mixed_imports(cells, violations)
     return violations
@@ -1089,6 +1089,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--ignore", action="append", default=None, help="Rule id to ignore (repeatable or comma-separated)")
     parser.add_argument("--fix", action="store_true", help="Fix files in place before checking")
     parser.add_argument("--fix-rule", action="append", default=None, help="Rule id to fix (repeatable or comma-separated)")
+    parser.add_argument("--show-rule", action="store_true", help="Show rule ids in violation output")
     args = parser.parse_args(argv[1:])
     cfg = load_config(_cfg_root(args.paths))
     if cfg.get("disabled"): return 0
@@ -1104,8 +1105,8 @@ def main(argv: list[str]) -> int:
         if fix_rules: fix_path(path, fix_rules)
         all_violations += check_path(path)
     all_violations = filter_violations(all_violations, ignored)
-    for path, lineno, _rule, msg, lines in sorted(all_violations, key=lambda v: v[:4]):
-        print(f"# {path}:{lineno}: {msg}")
+    for path, lineno, rule, msg, lines in sorted(all_violations, key=lambda v: v[:4]):
+        print(f"# {path}:{lineno}: [{rule}] {msg}" if args.show_rule else f"# {path}:{lineno}: {msg}")
         for line in lines: print(line)
     print(f"found {len(all_violations)} potential violation(s)")
     if all_violations:

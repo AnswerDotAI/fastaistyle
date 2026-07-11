@@ -86,6 +86,11 @@ Check multiple files/folders in one run:
 chkstyle path/to/code tests unit.py
 ```
 
+Show each violation's rule id (the name that `ignore`, `--ignore`, and `--fix-rule` take):
+```bash
+chkstyle --show-rule
+```
+
 Fix selected mechanical violations in place:
 ```bash
 chkstyle --fix path/to/code
@@ -114,6 +119,8 @@ When violations are found, it also prints a reminder to prioritize clarity and m
 x: int = 1
 ```
 
+Cells calling `nbdev_export()` (nbdev's standard closing cell) are skipped by all rules, matching nbdev's own behavior.
+
 ## Configuration
 
 Configure `chkstyle` in your `pyproject.toml`:
@@ -126,11 +133,11 @@ ignore = ["line-too-long"]
 fix = ["dict-literal", "single-statement-body"]
 ```
 
-Command-line skip arguments override config values. `--ignore` adds rule IDs to configured ignores; `--fix-rule` selects the fixer rules for that run when provided.
+Command-line skip arguments override config values. `--ignore` adds rule IDs to configured ignores; `--fix-rule` selects the fixer rules for that run when provided. Rule ids are shown in each section header below, and `--show-rule` includes them in violation output.
 
 ## What It Checks
 
-### `dict literal with 3+ identifier keys`
+### `dict literal with 3+ identifier keys` (`dict-literal`)
 Use `dict()` for keyword-like keys when all keys can be valid Python keyword arguments—it's easier to scan and produces cleaner diffs.
 
 ```python
@@ -141,7 +148,7 @@ payload = {"host": host, "port": port, "timeout": timeout}
 payload = dict(host=host, port=port, timeout=timeout)
 ```
 
-### `single-statement body not one-liner`
+### `single-statement body not one-liner` (`single-statement-body`)
 If the body is one simple statement, keep it on the header line when the result is short enough and no comments need to move.
 
 ```python
@@ -153,7 +160,7 @@ if ready:
 if ready: return True
 ```
 
-### `single-line docstring uses triple quotes`
+### `single-line docstring uses triple quotes` (`single-line-docstring`)
 Triple quotes are for multi-line strings. Single-line docstrings should use regular quotes.
 
 ```python
@@ -168,8 +175,8 @@ def foo():
     return x
 ```
 
-### `multi-line from-import`
-If it fits on one line, keep it on one line.
+### `multi-line from-import` (`multi-line-from-import`)
+If it fits on one line, keep it on one line. When it can't fit on one line but still uses more lines than needed, it's reported as `inefficient-multiline-from-import`.
 
 ```python
 # Bad
@@ -182,7 +189,7 @@ from os import (
 from os import path, environ
 ```
 
-### `consecutive short imports`
+### `consecutive short imports` (`consecutive-short-imports`)
 If you have a run of short `import foo` lines, combine them.
 
 ```python
@@ -195,7 +202,7 @@ import pathlib
 import os, sys, pathlib
 ```
 
-### `unused import`
+### `unused import` (`unused-import`)
 Remove imports that are never referenced.
 
 ```python
@@ -209,9 +216,9 @@ print(os.getcwd())
 
 Imports named in a simple static `__all__` count as used. Package `__init__.py` files are exempt from this rule so re-export modules stay quiet.
 
-For notebooks, `unused import` is checked across `#| export` / `#| exports` cells as one exported module. If an exported-cell import is only referenced from non-exported cells, `chkstyle` asks you to move it into a non-exported imports cell, recommending the first non-exported cell that already has imports when it can find one.
+For notebooks, `unused import` is checked across `#| export` / `#| exports` cells as one exported module. If an exported-cell import is only referenced from non-exported cells, `chkstyle` asks you to move it into a non-exported imports cell, recommending the first non-exported cell that already has imports when it can find one. That move-this-import case is reported as `exported-import-nonexport`.
 
-### `cell mixes imports and other code`
+### `cell mixes imports and other code` (`mixed-imports`)
 Notebooks only. In nbdev, the docs build runs every non-exported cell that contains an import, so mixing imports with other code in one cell either breaks the build or runs code at doc time. This is the same rule nbdev's own "mix of imports and computations" warning uses. Put imports in their own cell.
 
 ```python
@@ -225,9 +232,9 @@ import some_module
 some_module.something()
 ```
 
-Only top-level statements count, so `try: import foo` blocks and imports inside function definitions are fine. Cells with `#| export`, `#| exports`, `#| exporti`, `#| exec_doc`, or `#| eval: false` directives are exempt, as are cells calling `nbdev_export()`.
+Only top-level statements count, so `try: import foo` blocks and imports inside function definitions are fine. Cells with `#| export`, `#| exports`, `#| exporti`, `#| exec_doc`, or `#| eval: false` directives are exempt.
 
-### `closing bracket on its own line`
+### `closing bracket on its own line` (`closing-bracket`)
 Don't leave a bare closing `)`, `]`, or `}` on a line by itself.
 
 ```python
@@ -243,7 +250,7 @@ items = [
     two]
 ```
 
-### `continuation line indent`
+### `continuation line indent` (`continuation-indent`)
 Continuation lines should be indented exactly 4 spaces beyond the line that opened the block.
 
 ```python
@@ -258,15 +265,15 @@ result = call(
     second_arg)
 ```
 
-### `line >160 chars`
+### `line >160 chars` (`line-too-long`)
 Wrap at a natural boundary: argument lists, binary operators, or strings. 160 is the hard limit, but aim for ~140 (or ~120 when practical).
 Long lines are only exempt when the extra width mainly comes from string literal content.
 
-### `semicolon statement separator`
+### `semicolon statement separator` (`semicolon`)
 Don't use `;` to combine statements. Use separate lines.
 
-### `inefficient multiline expression`
-If the content would fit in fewer lines, condense it.
+### `inefficient multiline expression` (`inefficient-multiline-expression`)
+If the content would fit in fewer lines, condense it. The same check applies to `def`/`class` headers (`inefficient-multiline-signature`) and to type annotations (`inefficient-multiline-annotation`, where extracting a named alias also helps).
 
 ```python
 # Bad
@@ -280,7 +287,7 @@ result = call(
 result = call(a, b, c)
 ```
 
-### `lhs assignment annotation`
+### `lhs assignment annotation` (`lhs-assignment-annotation`)
 Avoid `x: int = 1` and bare `x: int` annotations in normal code. Put type hints on function parameters and return values instead. Dataclass and BaseModel fields are exempt, since their annotations are part of the class contract. Auto-fixing only rewrites value-bearing assignments like `x: int = 1`.
 
 ```python
@@ -292,7 +299,7 @@ name: str = "hello"
 def process(x: int, name: str) -> Result: ...
 ```
 
-### `nested generics depth >= 2`
+### `nested generics depth >= 2` (`nested-generics`)
 Keep parameter annotations simple. Deep nesting makes them hard to read.
 
 ```python

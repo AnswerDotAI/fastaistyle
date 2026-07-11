@@ -208,6 +208,13 @@ def test_chkstyle_main_shows_style_guidance_on_violations(tmp_path, capsys):
     assert "Style guidance: fix violations in the spirit of the fast.ai style guide." in out
     assert "Never apply a change that satisfies chkstyle but makes the code less clear." in out
 
+def test_chkstyle_main_show_rule_flag(tmp_path, capsys):
+    p = _write(tmp_path, "t.py", "x: int = 1\n")
+    chkstyle.main(["chkstyle", str(p)])
+    assert "[lhs-assignment-annotation]" not in capsys.readouterr().out
+    chkstyle.main(["chkstyle", "--show-rule", str(p)])
+    assert "[lhs-assignment-annotation]" in capsys.readouterr().out
+
 def test_chkstyle_ignore_config_and_cli(tmp_path, capsys):
     p = _write(tmp_path, "t.py", "x: int = 1\n")
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
@@ -629,6 +636,9 @@ def test_chkstyle_notebook_flags_mixed_imports_and_code(tmp_path):
     assert _has_msg({msg}, "cell mixes imports and other code")
     violations = _check_nb(tmp_path, ["# setup\nx = 1\nfrom pathlib import PurePath\n"])
     assert [v[2] for v in violations] == ["mixed-imports"] and violations[0][1] == 3
+
+def test_chkstyle_notebook_skips_nbdev_export_cell(tmp_path):
+    assert _check_nb(tmp_path, ["import nbdev; nbdev.nbdev_export()\n"]) == []
 
 def test_chkstyle_notebook_mixed_imports_allowed_cases(tmp_path):
     for cells in (["import os, sys\n"],  # imports only
