@@ -61,6 +61,18 @@ def test_chkstyle_ignore_and_off_on(tmp_path):
         # chkstyle: on
         """) == []
 
+def test_chkstyle_ignore_node(tmp_path):
+    reg = '''
+        d = {
+            'a/b': lambda x: x,
+            'c/d': lambda x: x * 2,
+        }
+        '''
+    msgs = _msgs(_check_py(tmp_path, reg))
+    assert _has_msg(msgs, "inefficient multiline expression") and _has_msg(msgs, "closing bracket on its own line")
+    assert _check_py(tmp_path, reg.replace("d = {", "d = {  # chkstyle: ignore-node")) == []
+    assert _check_py(tmp_path, reg.replace("d = {", "# chkstyle: ignore-node\n        d = {")) == []
+
 def test_chkstyle_skip_file(tmp_path):
     assert _check_py(tmp_path, """
         # chkstyle: skip

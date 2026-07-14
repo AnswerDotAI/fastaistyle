@@ -496,6 +496,13 @@ def suppressed_lines(lines: list[str]) -> set[int]:
             ignore_next = False
     return suppressed
 
+def node_suppressed_lines(lines: list[str], tree) -> set[int]:
+    "Lines covered by nodes starting on a `chkstyle: ignore-node` line (a comment-only pragma marks the next line)."
+    marked = {i + line.strip().startswith("#") for i, line in enumerate(lines, start=1) if _has_pragma(line, "chkstyle: ignore-node")}
+    if not marked: return set()
+    spans = [(n.lineno, n.end_lineno) for n in ast.walk(tree) if getattr(n, "lineno", None) in marked and getattr(n, "end_lineno", None)]
+    return {i for s, e in spans for i in range(s, e + 1)}
+
 def _line_offsets(source: str) -> list[int]:
     "Starting offset for each 1-based source line."
     offsets, pos = [], 0
@@ -556,7 +563,7 @@ def _source_ctx(source: str, path: str) -> tuple[SourceCtx | None, list[Issue]]:
     try: tree = ast.parse(source, filename=path)
     except SyntaxError as e: return None, [Issue("syntax-error", path, e.lineno or 1, f"syntax error: {e.msg}", [])]
     source_lines = source.splitlines(True)
-    suppressed = suppressed_lines(lines) | _all_assign_lines(tree)
+    suppressed = suppressed_lines(lines) | _all_assign_lines(tree) | node_suppressed_lines(lines, tree)
     offsets = _line_offsets(source)
     ctx = SourceCtx(source, path, lines, source_lines, tree, offsets, suppressed, ignored_line_len_token_spans(source, lines),
         token_line_infos(source), dataclass_annassigns(tree))

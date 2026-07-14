@@ -323,6 +323,13 @@ x: int = 1  # chkstyle: ignore
 # chkstyle: ignore
 y: int = 2
 
+# Ignore every violation in the node starting here, e.g. a whole
+# carefully-formatted statement (a comment-only pragma marks the next line)
+registry = {  # chkstyle: ignore-node
+    'text/plain': str,
+    'text/html': repr,
+}
+
 # Disable for a block
 # chkstyle: off
 carefully_formatted = {
