@@ -1087,9 +1087,29 @@ def _fix_rule_set(enabled: bool, cli_rules, cfg: dict) -> set[str]:
     rules = _rule_set(cli_rules) or _rule_set(cfg.get("fix")) or {ALL_RULES}
     return SUPPORTED_FIX_RULES if ALL_RULES in rules else rules & SUPPORTED_FIX_RULES
 
+_HELP_EPILOG = r'''config (pyproject.toml):
+  [tool.chkstyle] accepts skip_paths, skip-path-re, ignore, and fix, with the same
+  meanings as the flags above. CLI skip flags override config; --ignore adds to it.
+  Use --show-rule to see each violation's rule id (what ignore, fix, and --fix-rule take).
+
+skip pragmas (comments in the code being checked):
+  x = 1  # chkstyle: ignore           ignore this line (or put the pragma alone on the line above)
+  x = f(a,  # chkstyle: ignore-node   ignore the whole statement starting on this line
+  # chkstyle: off                     ignore until "# chkstyle: on"
+  # chkstyle: skip                    skip the entire file (must be in first 5 lines)
+
+notebooks:
+  .ipynb files are checked automatically; violations show cell id and in-cell line
+  number. Cells calling nbdev_export() are skipped.
+
+Exit status is 1 when violations are found. Full rule list with examples: README.md.
+'''
+
+
 def main(argv: list[str]) -> int:
     import argparse
-    parser = argparse.ArgumentParser(description="Check Python files for style violations")
+    parser = argparse.ArgumentParser(description="Check Python files and Jupyter notebooks for style violations",
+        epilog=_HELP_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("paths", nargs="*", default=["."], help="Files and/or directories to check")
     parser.add_argument("--skip-path", action="append", default=None, help="Path to skip (repeatable)")
     parser.add_argument("--skip-path-re", help="Regex to skip normalized paths (uses Python re.match)")
