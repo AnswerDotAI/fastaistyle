@@ -338,7 +338,9 @@ carefully_formatted = {
 }
 # chkstyle: on
 
-# Skip an entire file (must be in first 5 lines)
+# Skip an entire file - or, in a notebook, the containing cell
+# (must be in the first 5 lines of the file or cell; works even
+# when the source cannot parse, unlike the other pragmas)
 # chkstyle: skip
 ```
 

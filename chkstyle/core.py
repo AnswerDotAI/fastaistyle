@@ -931,8 +931,16 @@ def _is_export_cell(source: str) -> bool: return bool(NB_EXPORT_RE.search(source
 _IPY_LINE_RE = re.compile(r"(\s*)([!%?].*)$")
 
 def _neutralize_ipython(lines: list[str]) -> list[str]:
-    "Comment out IPython `!shell`/`%magic`/`?help` lines so cells parse as Python; `pass` keeps indented blocks non-empty"
-    return [f"{m[1]}pass  # {m[2]}" if (m := _IPY_LINE_RE.match(l)) else l for l in lines]
+    "Comment out IPython `!shell`/`%magic`/`?help` lines, and their `\\` continuations, so cells parse as Python; `pass` keeps indented blocks non-empty"
+    out, cont = [], False
+    for l in lines:
+        if cont: out.append(f"# {l}")
+        elif m := _IPY_LINE_RE.match(l): out.append(f"{m[1]}pass  # {m[2]}")
+        else:
+            out.append(l)
+            continue
+        cont = l.rstrip().endswith("\\")
+    return out
 
 def _notebook_cells(nb, path: str) -> list[dict]:
     "Notebook code cell metadata."
@@ -1096,11 +1104,13 @@ skip pragmas (comments in the code being checked):
   x = 1  # chkstyle: ignore           ignore this line (or put the pragma alone on the line above)
   x = f(a,  # chkstyle: ignore-node   ignore the whole statement starting on this line
   # chkstyle: off                     ignore until "# chkstyle: on"
-  # chkstyle: skip                    skip the entire file (must be in first 5 lines)
+  # chkstyle: skip                    skip the whole file - or notebook cell (must be in its first 5 lines)
 
 notebooks:
   .ipynb files are checked automatically; violations show cell id and in-cell line
-  number. Cells calling nbdev_export() are skipped.
+  number. Cells calling nbdev_export() are skipped, as are cells with a skip pragma:
+  it applies per cell, and works even on a cell that cannot parse, unlike the
+  other pragmas, which need parsed source.
 
 Exit status is 1 when violations are found. Full rule list with examples: README.md.
 '''

@@ -524,8 +524,9 @@ def test_chkstyle_trailing_semicolons(tmp_path):
     assert src == "#| hide\nimport nbdev\nnbdev.nbdev_export()", repr(src)
 
 def test_chkstyle_skips_ipython_magics(tmp_path):
-    "IPython `!`/`%` lines and `%%` cell magics aren't Python: no syntax errors, but the cell's real code is still checked."
-    msgs = _msgs(_check_nb(tmp_path, ["!exec_nb --help", "%%bash\nls | wc -l", "%time x = 1\ny: int = 2"]))
+    "IPython `!`/`%` lines (including `\\` continuations) and `%%` cell magics aren't Python: no syntax errors, but the cell's real code is still checked."
+    msgs = _msgs(_check_nb(tmp_path, ["!exec_nb --help", "%%bash\nls | wc -l", "%time x = 1\ny: int = 2",
+        "!codex exec --json \\\n    -c key=val \\\n    'p' > out.jsonl\nz: int = 3"]))
     assert not _has_msg(msgs, "syntax error"), msgs
     assert _has_msg(msgs, "lhs assignment annotation"), msgs
 
