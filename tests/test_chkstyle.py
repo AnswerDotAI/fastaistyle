@@ -422,6 +422,8 @@ def test_chkstyle_fix_imports_brackets_indent_and_semicolon(tmp_path):
                 beta,
         )
         a = 1; b = 2
+        with ctx():
+            c = 3; d = 4
         print(path, environ, sys.version)
         """)
     chkstyle.main(["chkstyle", "--fix", "--fix-rule", "unused-import", "--fix-rule", "multi-line-from-import",
@@ -433,6 +435,7 @@ def test_chkstyle_fix_imports_brackets_indent_and_semicolon(tmp_path):
     assert "data = dict(a=1, b=2, c=3)" in fixed
     assert "    alpha,\n    beta,)" in fixed
     assert "a = 1\nb = 2" in fixed
+    assert "with ctx():\n    c = 3\n    d = 4" in fixed
 
 def test_chkstyle_allows_standalone_closer_with_comment(tmp_path):
     assert not _has_msg(_msgs(_check_py(tmp_path, """

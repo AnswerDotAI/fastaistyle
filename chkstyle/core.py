@@ -821,7 +821,7 @@ def _semicolon_issues(ctx: SourceCtx) -> list[Issue]:
                 indent, newline = " " * first_line_indent(ctx.lines, lineno), _line_ending(ctx.source_lines[lineno - 1])
                 # `newline` is empty on a cell's final line - the separator between parts must still be a real newline
                 sep = newline or "\n"
-                edit = start, end, sep.join([parts[0]] + [indent + part for part in parts[1:]]) + newline
+                edit = start, end, sep.join(indent + part for part in parts) + newline
         msg = with_hint("semicolon statement separator", "split into separate statements on separate lines")
         _append_issue(issues, _new_issue(ctx, "semicolon", lineno, msg, [line], edit))
     return issues
