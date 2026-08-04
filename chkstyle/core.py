@@ -1,5 +1,6 @@
 import ast, io, json, keyword, math, os, re, symtable, sys, tokenize
 from dataclasses import dataclass
+from fastcore.nbio import mk_cell
 try: import tomllib
 except ImportError: import tomli as tomllib
 
@@ -8,8 +9,8 @@ WRAP_WIDTH = 120
 MAX_LINE_LEN = 160
 COMBINE_WIDTH = 140  # max length for lines created by joining/condensing
 UNUSED_IMPORT_HINT = "remove unused imports; re-exports belong in `__all__` or package `__init__.py`"
-NB_EXPORT_RE = re.compile(r"^\s*#\|\s*exports?\b", re.M)
-NB_MIX_EXEMPT_RE = re.compile(r"^\s*#\|\s*(?:exports?|exporti|exec_doc|eval:\s*(?i:false))\b", re.M)
+NB_EXPORT_KEYS = {"export", "exports"}
+NB_MIX_EXEMPT_KEYS = {"export", "exports", "exporti", "exec_doc"}
 ALL_RULES = "all"
 SUPPORTED_FIX_RULES = set("consecutive-short-imports continuation-indent closing-bracket dict-literal inefficient-multiline-expression "
     "lhs-assignment-annotation multi-line-from-import nested-generics semicolon single-line-docstring "
@@ -926,7 +927,6 @@ def _cell_source(cell) -> str:
     source = cell.get("source", [])
     return source if isinstance(source, str) else "".join(source)
 
-def _is_export_cell(source: str) -> bool: return bool(NB_EXPORT_RE.search(source))
 
 _IPY_LINE_RE = re.compile(r"(\s*)([!%?].*)$")
 
@@ -951,10 +951,12 @@ def _notebook_cells(nb, path: str) -> list[dict]:
         if not source.strip(): continue
         if source.lstrip().startswith("%%"): continue  # cell magic: the whole cell is non-Python
         cell_id = cell.get("id", "unknown")
+        d = mk_cell(source, metadata=cell.get("metadata", {})).directives
         lines = _neutralize_ipython(source.splitlines())
         source = "\n".join(lines)
-        cells.append(dict(id=cell_id, path=f"{path}:cell[{cell_id}]", source=source, lines=lines, export=_is_export_cell(source),
-            skip=should_skip_file(lines) or "nbdev_export()" in source))
+        cells.append(dict(id=cell_id, path=f"{path}:cell[{cell_id}]", source=source, lines=lines,
+            export=bool(NB_EXPORT_KEYS & d.keys()), skip=should_skip_file(lines) or "nbdev_export()" in source,
+            mix_exempt=bool(NB_MIX_EXEMPT_KEYS & d.keys()) or d.get("eval", "").lower() == "false"))
     return cells
 
 def _combine_notebook_cells(cells: list[dict]) -> tuple[str, dict]:
@@ -1015,7 +1017,7 @@ def _check_notebook_unused_imports(cells: list[dict], path: str, violations: lis
 def _check_notebook_mixed_imports(cells: list[dict], violations: list[tuple]):
     "Flag non-exported cells mixing top-level imports with other code (nbdev's mixed imports+computations warning)."
     for cell in cells:
-        if cell["skip"] or NB_MIX_EXEMPT_RE.search(cell["source"]): continue
+        if cell["skip"] or cell["mix_exempt"]: continue
         try: tree = ast.parse(cell["source"], filename=cell["path"])
         except SyntaxError: continue
         imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]

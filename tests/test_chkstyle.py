@@ -10,7 +10,8 @@ def _write(tmp_path, name, content):
 
 def _write_nb(tmp_path, name, cells):
     nb = {
-        "cells": [{"cell_type": "code", "id": f"cell{i}", "source": src} for i, src in enumerate(cells)],
+        "cells": [{"cell_type": "code", "id": f"cell{i}", "source": src[0] if isinstance(src, tuple) else src,
+                   "metadata": src[1] if isinstance(src, tuple) else {}} for i, src in enumerate(cells)],
         "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
     }
     path = tmp_path / name
@@ -612,6 +613,14 @@ def test_chkstyle_notebook_exported_import_message_falls_back_without_import_cel
 
 def test_chkstyle_notebook_allows_exported_import_used_in_later_export_cell(tmp_path):
     assert _check_nb(tmp_path, ["#| export\nimport os\n", "#| export\nprint(os.getcwd())\n"]) == []
+
+META_EXPORT = {"nbdev": {"export": "true"}}
+
+def test_chkstyle_notebook_honors_meta_directives(tmp_path):
+    "nbdev directives in cell metadata count the same as `#| export` comment lines"
+    assert _check_nb(tmp_path, ["#| export\nimport os\n", ("print(os.getcwd())\n", META_EXPORT)]) == []
+    msgs = _msgs(_check_nb(tmp_path, [("import os\nprint(os.getcwd())\n", META_EXPORT)]))
+    assert not _has_msg(msgs, "cell mixes imports and other code"), msgs
 
 def test_chkstyle_notebook_flags_truly_unused_exported_import(tmp_path):
     msgs = _msgs(_check_nb(tmp_path, ["#| export\nimport os\n"]))
