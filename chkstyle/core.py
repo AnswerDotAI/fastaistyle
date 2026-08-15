@@ -12,6 +12,10 @@ UNUSED_IMPORT_HINT = "remove unused imports; re-exports belong in `__all__` or p
 NB_EXPORT_KEYS = {"export", "exports"}
 NB_MIX_EXEMPT_KEYS = {"export", "exports", "exporti", "exec_doc"}
 ALL_RULES = "all"
+NB_NARRATIVE_RULES = set("too-many-defs long-exported-cell long-example-cell undocumented-export "
+    "comment-in-example exported-run example-run".split())
+MAX_CELL_DEFS, MAX_EXPORT_CELL_LINES, MAX_EXAMPLE_CELL_LINES = 3, 50, 10
+MAX_EXPORT_RUN, MAX_EXAMPLE_RUN = 2, 3
 SUPPORTED_FIX_RULES = set("consecutive-short-imports continuation-indent closing-bracket dict-literal inefficient-multiline-expression "
     "lhs-assignment-annotation multi-line-from-import nested-generics semicolon single-line-docstring "
     "single-statement-body unused-import".split())
@@ -1027,6 +1031,98 @@ def _check_notebook_mixed_imports(cells: list[dict], violations: list[tuple]):
         msg = with_hint("cell mixes imports and other code", "put imports in their own cell")
         violations.append((cell["path"], lineno, "mixed-imports", msg, [cell["lines"][lineno - 1]]))
 
+def _docment_lines(tree) -> set[int]:
+    "Lines whose trailing comments are docments: def headers and annotated assignments."
+    lines = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)): lines.update(range(node.lineno, node.body[0].lineno))
+        elif isinstance(node, ast.AnnAssign): lines.update(range(node.lineno, node.end_lineno + 1))
+    return lines
+
+def _cell_comment_lineno(source: str, tree) -> int | None:
+    "First line with a comment that is not a directive, pragma, or docment."
+    try: tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (tokenize.TokenError, SyntaxError): return None
+    docments = _docment_lines(tree) if tree else set()
+    for tok in tokens:
+        if tok.type != tokenize.COMMENT or tok.string.startswith("#|") or "chkstyle:" in tok.string: continue
+        if tok.start[0] not in docments: return tok.start[0]
+    return None
+
+def _narrative_cells(nb, path: str) -> tuple[list[dict], bool]:
+    "All notebook cells in document order, with the metadata the narrative rules need."
+    cells, has_exp = [], False
+    for cell in nb.get("cells", []):
+        source, typ = _cell_source(cell), cell.get("cell_type")
+        if typ == "markdown" and source.strip():
+            cells.append(dict(typ="md"))
+            continue
+        if typ != "code": continue
+        d = mk_cell(source, metadata=cell.get("metadata", {})).directives
+        lines = source.splitlines()
+        n = sum(1 for l in lines if l.strip() and not l.lstrip().startswith("#|"))
+        has_exp = has_exp or "default_exp" in d
+        if not n: continue
+        tree = None
+        if not source.lstrip().startswith("%%"):
+            try: tree = ast.parse("\n".join(_neutralize_ipython(lines)))
+            except SyntaxError: pass
+        cells.append(dict(typ="code", path=f"{path}:cell[{cell.get('id', 'unknown')}]", source=source, lines=lines, n=n,
+            tree=tree, export=bool(NB_EXPORT_KEYS & d.keys()), hide="hide" in d,
+            skip=should_skip_file(lines) or "nbdev_export()" in source))
+    return cells, has_exp
+
+def _first_code_lineno(cell: dict) -> int:
+    "1-based first non-blank, non-directive line of a cell."
+    return next(i for i, l in enumerate(cell["lines"], 1) if l.strip() and not l.lstrip().startswith("#|"))
+
+def _narr_issue(cell: dict, lineno: int, rule: str, msg: str, hint: str, violations: list):
+    if lineno in suppressed_lines(cell["lines"]): return
+    violations.append((cell["path"], lineno, rule, with_hint(msg, hint), [cell["lines"][lineno - 1]]))
+
+def _check_notebook_narrative(nb, path: str, violations: list):
+    "Narrative rules for nbdev docs notebooks: keep cells small and interleave markdown prose with the code."
+    cells, has_exp = _narrative_cells(nb, path)
+    if not (os.path.basename(path) == "index.ipynb" or has_exp): return
+    cells = [c for c in cells if c["typ"] == "md" or not (c["skip"] or c["hide"])]
+    exp_run = ex_run = 0
+    for i, c in enumerate(cells):
+        if c["typ"] == "md":
+            exp_run = ex_run = 0
+            continue
+        body = c["tree"].body if c["tree"] else []
+        defs = [node for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        if len(defs) > MAX_CELL_DEFS:
+            _narr_issue(c, defs[MAX_CELL_DEFS].lineno, "too-many-defs",
+                f"cell has {len(defs)} top-level definitions", "give each idea its own cell", violations)
+        if c["export"]:
+            exp_run, ex_run = exp_run + 1, 0
+            if c["n"] > MAX_EXPORT_CELL_LINES:
+                _narr_issue(c, _first_code_lineno(c), "long-exported-cell", f"exported cell has {c['n']} code lines",
+                    "split it, e.g. adding methods with @patch", violations)
+            pubs = [node for node in defs if not node.name.startswith("_")]
+            md_adjacent = (i > 0 and cells[i-1]["typ"] == "md") or (i + 1 < len(cells) and cells[i+1]["typ"] == "md")
+            if pubs and not md_adjacent:
+                _narr_issue(c, pubs[0].lineno, "undocumented-export",
+                    f"no markdown cell around exported definition `{pubs[0].name}`", "add a markdown cell explaining it", violations)
+            if exp_run == MAX_EXPORT_RUN + 1:
+                _narr_issue(c, _first_code_lineno(c), "exported-run",
+                    f"more than {MAX_EXPORT_RUN} exported cells in a row", "break up exported cells with markdown prose", violations)
+        else:
+            exp_run = 0
+            if c["n"] > MAX_EXAMPLE_CELL_LINES:
+                _narr_issue(c, _first_code_lineno(c), "long-example-cell", f"example cell has {c['n']} code lines",
+                    "split it and show the intermediate results", violations)
+            lineno = _cell_comment_lineno(c["source"], c["tree"])
+            if lineno:
+                _narr_issue(c, lineno, "comment-in-example", "comment in example cell",
+                    "grow it into a markdown cell, splitting the cell if needed", violations)
+            if any(isinstance(node, (ast.Import, ast.ImportFrom)) for node in body): continue
+            ex_run += 1
+            if ex_run == MAX_EXAMPLE_RUN + 1:
+                _narr_issue(c, _first_code_lineno(c), "example-run",
+                    f"more than {MAX_EXAMPLE_RUN} example cells in a row", "introduce what the examples show in markdown", violations)
+
 def check_notebook(path: str) -> list[tuple]:
     "Check Jupyter notebook for style violations."
     with open(path, encoding="utf-8") as f: nb = json.load(f)
@@ -1034,6 +1130,7 @@ def check_notebook(path: str) -> list[tuple]:
     violations = [v for cell in cells if not cell["skip"] for v in check_source(cell["source"], cell["path"], check_unused=False)]
     _check_notebook_unused_imports(cells, path, violations)
     _check_notebook_mixed_imports(cells, violations)
+    _check_notebook_narrative(nb, path, violations)
     return violations
 
 def fix_notebook(path: str, selected: set[str]) -> bool:
@@ -1098,7 +1195,7 @@ def _fix_rule_set(enabled: bool, cli_rules, cfg: dict) -> set[str]:
     return SUPPORTED_FIX_RULES if ALL_RULES in rules else rules & SUPPORTED_FIX_RULES
 
 _HELP_EPILOG = r'''config (pyproject.toml):
-  [tool.chkstyle] accepts skip_paths, skip-path-re, ignore, and fix, with the same
+  [tool.chkstyle] accepts skip_paths, skip-path-re, ignore, fix, and nb-narrative, with the same
   meanings as the flags above. CLI skip flags override config; --ignore adds to it.
   Use --show-rule to see each violation's rule id (what ignore, fix, and --fix-rule take).
 
@@ -1113,6 +1210,8 @@ notebooks:
   number. Cells calling nbdev_export() are skipped, as are cells with a skip pragma:
   it applies per cell, and works even on a cell that cannot parse, unlike the
   other pragmas, which need parsed source.
+  Narrative rules (nbdev notebooks with a `default_exp` cell, and index.ipynb) check
+  that markdown prose accompanies the code; nb-narrative = false in config disables them all.
 
 Exit status is 1 when violations are found. Full rule list with examples: README.md.
 '''
@@ -1136,6 +1235,7 @@ def main(argv: list[str]) -> int:
     skip_path_re = re.compile(skip_pattern) if skip_pattern else None
     skip_paths = args.skip_path if args.skip_path is not None else _cfg_skip_paths(cfg)
     ignored = _rule_set(cfg.get("ignore"), args.ignore)
+    if not cfg.get("nb-narrative", cfg.get("nb_narrative", True)): ignored |= NB_NARRATIVE_RULES
     fix_rules = _fix_rule_set(args.fix, args.fix_rule, cfg)
     all_violations = []
     targets = (path for root in args.paths

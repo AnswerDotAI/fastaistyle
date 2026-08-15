@@ -131,6 +131,7 @@ skip_paths = ["vendor", "src/generated"]
 skip-path-re = "test|migrations|vendor|src/gen"
 ignore = ["line-too-long"]
 fix = ["dict-literal", "single-statement-body"]
+nb-narrative = false  # disable the notebook narrative rules
 ```
 
 Command-line skip arguments override config values. `--ignore` adds rule IDs to configured ignores; `--fix-rule` selects the fixer rules for that run when provided. Rule ids are shown in each section header below, and `--show-rule` includes them in violation output.
@@ -310,6 +311,20 @@ def process(items: list[dict[str, list[int]]]): ...
 Payload = dict[str, list[int]]
 def process(items: list[Payload]): ...
 ```
+
+### Notebook narrative rules
+
+nbdev notebooks are literate source: the rendered page is documentation, so code needs markdown prose around it. These rules run only on notebooks with a `#| default_exp` cell, and on `index.ipynb`. Set `nb-narrative = false` in `[tool.chkstyle]` to turn them all off, or ignore individual rule ids as usual. Cells with `#| hide`, and cells with a skip pragma, are exempt. Export directives are recognized in both `#|` comment and cell-metadata form.
+
+| Rule id | Fires when |
+|---|---|
+| `too-many-defs` | a cell has more than 3 top-level defs or classes |
+| `long-exported-cell` | an exported cell has more than 50 code lines |
+| `long-example-cell` | a non-exported cell has more than 10 code lines |
+| `undocumented-export` | an exported cell defines a public def or class with no markdown cell directly before or after |
+| `comment-in-example` | a non-exported cell contains a comment (docments excluded): the comment usually belongs in a markdown cell |
+| `exported-run` | more than 2 exported cells in a row with no markdown between |
+| `example-run` | more than 3 non-exported cells in a row with no markdown between (import cells don't count) |
 
 ## Opting Out
 

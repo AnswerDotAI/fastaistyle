@@ -9,14 +9,16 @@ def _write(tmp_path, name, content):
     return path
 
 def _write_nb(tmp_path, name, cells):
-    nb = {
-        "cells": [{"cell_type": "code", "id": f"cell{i}", "source": src[0] if isinstance(src, tuple) else src,
-                   "metadata": src[1] if isinstance(src, tuple) else {}} for i, src in enumerate(cells)],
-        "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
-    }
+    def _cell(i, src):
+        if isinstance(src, dict): return {"cell_type": "code", "id": f"cell{i}", "metadata": {}, **src}
+        return {"cell_type": "code", "id": f"cell{i}", "source": src[0] if isinstance(src, tuple) else src,
+                "metadata": src[1] if isinstance(src, tuple) else {}}
+    nb = {"cells": [_cell(i, src) for i, src in enumerate(cells)], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
     path = tmp_path / name
     path.write_text(json.dumps(nb), encoding="utf-8")
     return path
+
+def _md(src): return {"cell_type": "markdown", "source": src}
 
 def _check_py(tmp_path, content): return chkstyle.check_file(str(_write(tmp_path, "t.py", content)))
 def _check_nb(tmp_path, cells): return chkstyle.check_notebook(str(_write_nb(tmp_path, "t.ipynb", cells)))
@@ -744,3 +746,55 @@ def test_chkstyle_core_py_no_violations():
     core_path = pathlib.Path(__file__).parent.parent / "chkstyle" / "core.py"
     violations = chkstyle.check_file(str(core_path))
     assert violations == [], f"Unexpected violations in core.py: {[v[:4] for v in violations]}"
+
+def _rules(violations): return {v[2] for v in violations}
+
+def test_chkstyle_notebook_narrative_rules(tmp_path):
+    "Each narrative rule fires once on a crafted nbdev notebook, gated by `default_exp`."
+    long_exp = "#| export\n" + "".join(f"x{i} = {i}\n" for i in range(51))
+    long_ex = "".join(f"y{i} = {i}\n" for i in range(11))
+    violations = _check_nb(tmp_path, [
+        "#| default_exp core\n",
+        _md("# Title"),
+        "#| export\ndef a(): pass\ndef b(): pass\ndef c(): pass\ndef d(): pass\n",
+        long_exp,
+        _md("words"),
+        "#| export\ndef pub(): pass\n",
+        "#| export\ndef pub2(): pass\n",
+        "#| export\nz = 1\n",
+        _md("reset"),
+        long_ex,
+        "y1  # a comment\n",
+        "y2\n",
+        "y1 + y2\n",
+    ])
+    assert _rules(violations) == {"too-many-defs", "long-exported-cell", "undocumented-export",
+        "exported-run", "long-example-cell", "comment-in-example", "example-run"}
+
+def test_chkstyle_notebook_narrative_exemptions(tmp_path):
+    "Docments, directives, pragmas, hidden cells, and import cells don't trigger narrative rules; ungated notebooks skip them entirely."
+    cells = [
+        "#| default_exp core\n",
+        _md("intro"),
+        "def sums(\n    a:int,  # First thing to sum\n    b:int=1 # Second thing to sum\n) -> int: # The sum\n    'Adds.'\n    return a + b\n",
+        "#| hide\n# a hidden comment\nq = 1\n",
+        "import json\n",
+        "sums(1)\n",
+        "sums(2)  # chkstyle: ignore\n",
+    ]
+    assert _check_nb(tmp_path, cells) == []
+    ungated = [_md("intro"), "y1  # a comment\n"]
+    assert _check_nb(tmp_path, ungated) == []
+    assert _rules(chkstyle.check_notebook(str(_write_nb(tmp_path, "index.ipynb", ungated)))) == {"comment-in-example"}
+
+def test_chkstyle_config_nb_narrative_flag(tmp_path, capsys):
+    "`nb-narrative = false` disables the narrative rules but not mixed-imports."
+    p = _write_nb(tmp_path, "index.ipynb", ["y1  # a comment\n"])
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.chkstyle]
+        nb-narrative = false
+        """), encoding="utf-8")
+    assert chkstyle.main(["chkstyle", str(p)]) == 0
+    p2 = _write_nb(tmp_path, "index2.ipynb", ["import os\nprint(os.getcwd())\n"])
+    assert chkstyle.main(["chkstyle", str(p2)]) == 1
+    assert "mixes imports" in capsys.readouterr().out
