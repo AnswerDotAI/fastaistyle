@@ -593,6 +593,42 @@ def _from_import_src(node, names: list | None = None) -> str:
     mod = "." * node.level + (node.module or "")
     return f"from {mod} import {', '.join(_alias_src(alias) for alias in (names or node.names))}"
 
+def _comma_pieces(repl: str) -> list[str] | None:
+    "Split a single-line expression after commas at the shallowest bracket depth."
+    if "\n" in repl: return None
+    try: tokens = list(tokenize.generate_tokens(io.StringIO(repl).readline))
+    except tokenize.TokenError: return None
+    depth, cols = 0, {}
+    for tok in tokens:
+        if tok.type != tokenize.OP: continue
+        if tok.string in "([{": depth += 1
+        elif tok.string in ")]}": depth -= 1
+        elif tok.string == "," and depth > 0: cols.setdefault(depth, []).append(tok.end[1])
+    if not cols: return None
+    splits = cols[min(cols)]
+    return [repl[start:end].strip() for start,end in zip([0] + splits, splits + [len(repl)])]
+
+def _resplit(repl: str, col: int, indent: int) -> str | None:
+    "Re-split a too-long one-line expression after shallowest-depth commas, packing lines to `COMBINE_WIDTH`."
+    pieces = _comma_pieces(repl)
+    if not pieces: return None
+    pad = " " * (indent + 4)
+    lines, cur, budget = [], pieces[0], COMBINE_WIDTH - col
+    if len(cur) > budget: return None
+    for piece in pieces[1:]:
+        if len(cur) + 1 + len(piece) <= budget: cur += " " + piece
+        else:
+            lines.append(cur)
+            cur, budget = pad + piece, COMBINE_WIDTH
+            if len(cur) > budget: return None
+    lines.append(cur)
+    if is_inefficient_multiline(lines, indent): return None
+    res = "\n".join(lines)
+    try: ast.parse(res, mode="eval")
+    except SyntaxError: return None
+    return res
+
+
 def _dict_fix_src(node, source: str, indent: int) -> str | None:
     "Replacement source for an eligible dict literal."
     keys = dict_keyword_keys(node)
@@ -603,7 +639,8 @@ def _dict_fix_src(node, source: str, indent: int) -> str | None:
         if val_src is None: return None
         parts.append(f"{key}={val_src.strip()}")
     res = f"dict({', '.join(parts)})"
-    return res if indent + len(res) <= COMBINE_WIDTH else None
+    if indent + len(res) <= COMBINE_WIDTH: return res
+    return _resplit(res, node.col_offset, indent)
 
 def _simplify_annotation(node, depth: int = 0):
     "Remove nested generic levels beyond depth 1."
@@ -682,8 +719,11 @@ def _multiline_expr_issue(ctx: SourceCtx, node) -> Issue | None:
     if not seg_lines or len(seg_lines) <= 1: return None
     if not is_inefficient_multiline(seg_lines, first_line_indent(ctx.lines, node.lineno)): return None
     edit = None
-    repl = ast.unparse(node)
-    if not _has_comments(seg_lines) and first_line_indent(ctx.lines, node.lineno) + len(repl) <= COMBINE_WIDTH: edit = _node_edit(ctx, node, repl)
+    if not _has_comments(seg_lines):
+        indent = first_line_indent(ctx.lines, node.lineno)
+        repl = ast.unparse(node)
+        if indent + len(repl) > COMBINE_WIDTH: repl = _resplit(repl, node.col_offset, indent)
+        if repl: edit = _node_edit(ctx, node, repl)
     msg = with_hint("inefficient multiline expression", "condense to fewer lines; avoid leaving `(`, `dict(`, or `{` on their own line")
     return _new_issue(ctx, "inefficient-multiline-expression", node.lineno, msg, seg_lines, edit)
 

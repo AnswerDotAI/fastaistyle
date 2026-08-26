@@ -798,3 +798,27 @@ def test_chkstyle_config_nb_narrative_flag(tmp_path, capsys):
     p2 = _write_nb(tmp_path, "index2.ipynb", ["import os\nprint(os.getcwd())\n"])
     assert chkstyle.main(["chkstyle", str(p2)]) == 1
     assert "mixes imports" in capsys.readouterr().out
+
+def test_chkstyle_fix_resplits_wide_expressions(tmp_path):
+    p = _write(tmp_path, "t.py", '''
+        def auth_url(client, redirect_uri, scopes, challenge, state):
+            return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({
+                'client_id': client['client_id'], 'redirect_uri': redirect_uri, 'response_type': 'code',
+                'scope': ' '.join(scopes), 'access_type': 'offline', 'prompt': 'consent',
+                'include_granted_scopes': 'true', 'code_challenge': challenge,
+                'code_challenge_method': 'S256', 'state': state})
+        ''')
+    chkstyle.main(["chkstyle", "--fix", str(p)])
+    fixed = p.read_text(encoding="utf-8")
+    assert "dict(client_id=client['client_id']" in fixed
+    assert all(len(line) <= 140 for line in fixed.splitlines())
+    assert chkstyle.check_file(str(p)) == []
+    p2 = _write(tmp_path, "t2.py", '''
+        cfg = {
+            'alpha': 'a' * 200,
+            'beta': '%s',
+            'gamma': 3}
+        ''' % ("x" * 130))
+    before = p2.read_text(encoding="utf-8")
+    chkstyle.main(["chkstyle", "--fix", str(p2)])
+    assert p2.read_text(encoding="utf-8") == before
