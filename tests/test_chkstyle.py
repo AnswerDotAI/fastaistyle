@@ -787,6 +787,20 @@ def test_chkstyle_notebook_narrative_exemptions(tmp_path):
     assert _check_nb(tmp_path, ungated) == []
     assert _rules(chkstyle.check_notebook(str(_write_nb(tmp_path, "index.ipynb", ungated)))) == {"comment-in-example"}
 
+def test_chkstyle_narrative_counts_logical_lines(tmp_path):
+    "Multiline strings are one logical unit, so a big docstring or literal doesn't make a cell 'long'."
+    doc_lines = "\n".join(f"line {i}" for i in range(60))
+    big_str = '"""\n' + "line\n" * 15 + '"""'
+    cells = [
+        "#| default_exp core\n",
+        _md("words"),
+        f'#| export\ndef pub():\n    """Docs.\n\n{doc_lines}\n    """\n    return 1\n',
+        _md("more words"),
+        f"ask({big_str})\n",
+    ]
+    assert _check_nb(tmp_path, cells) == []
+
+
 def test_chkstyle_config_nb_narrative_flag(tmp_path, capsys):
     "`nb-narrative = false` disables the narrative rules but not mixed-imports."
     p = _write_nb(tmp_path, "index.ipynb", ["y1  # a comment\n"])

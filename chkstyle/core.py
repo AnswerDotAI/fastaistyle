@@ -1105,8 +1105,10 @@ def _narrative_cells(nb, path: str) -> tuple[list[dict], bool]:
         if not n: continue
         tree = None
         if not source.lstrip().startswith("%%"):
-            try: tree = ast.parse("\n".join(_neutralize_ipython(lines)))
+            neut = "\n".join(_neutralize_ipython(lines))
+            try: tree = ast.parse(neut)
             except SyntaxError: pass
+            if tree: n = sum(1 for t in tokenize.generate_tokens(io.StringIO(neut).readline) if t.type == tokenize.NEWLINE)
         cells.append(dict(typ="code", path=f"{path}:cell[{cell.get('id', 'unknown')}]", source=source, lines=lines, n=n,
             tree=tree, export=bool(NB_EXPORT_KEYS & d.keys()), hide="hide" in d,
             skip=should_skip_file(lines) or "nbdev_export()" in source))
