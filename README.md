@@ -319,8 +319,8 @@ nbdev notebooks are literate source: the rendered page is documentation, so code
 | Rule id | Fires when |
 |---|---|
 | `too-many-defs` | a cell has more than 3 top-level defs or classes |
-| `long-exported-cell` | an exported cell has more than 50 code lines |
-| `long-example-cell` | a non-exported cell has more than 10 code lines |
+| `long-exported-cell` | an exported cell has more than 50 logical code lines (a multiline string is one line) |
+| `long-example-cell` | a non-exported cell has more than 10 logical code lines |
 | `undocumented-export` | an exported cell defines a public def or class with no markdown cell directly before or after |
 | `comment-in-example` | a non-exported cell contains a comment (docments excluded): the comment usually belongs in a markdown cell |
 | `exported-run` | more than 2 exported cells in a row with no markdown between |
