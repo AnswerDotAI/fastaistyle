@@ -107,8 +107,7 @@ Skip specific paths by name/path (repeatable):
 chkstyle --skip-path vendor --skip-path src/generated
 ```
 
-The checker prints violations with file paths, line numbers, the offending code, and a short fix hint.
-When violations are found, it also prints a reminder to prioritize clarity and match the spirit of the style guide.
+The checker prints violations with file paths, line numbers, the offending code, and a short fix hint. When violations are found, it also prints a reminder to prioritize clarity and match the spirit of the style guide.
 
 ### Jupyter Notebook Support
 
@@ -267,8 +266,7 @@ result = call(
 ```
 
 ### `line >160 chars` (`line-too-long`)
-Wrap at a natural boundary: argument lists, binary operators, or strings. 160 is the hard limit, but aim for ~140 (or ~120 when practical).
-Long lines are only exempt when the extra width mainly comes from string literal content.
+Wrap at a natural boundary: argument lists, binary operators, or strings. 160 is the hard limit, but aim for ~140 (or ~120 when practical). Long lines are only exempt when the extra width mainly comes from string literal content.
 
 ### `semicolon statement separator` (`semicolon`)
 Don't use `;` to combine statements. Use separate lines.
