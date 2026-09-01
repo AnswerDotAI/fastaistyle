@@ -2,6 +2,24 @@
 
 <!-- do not remove -->
 
+## 0.0.18
+
+### New Features
+
+- split over-long condensed dict/expression fixes across multiple lines instead of skipping them ([#24](https://github.com/AnswerDotAI/fastaistyle/issues/24))
+- Use fastcore mk_cell directives for notebook export/mix-exempt detection, supporting nbdev directives in cell metadata ([#23](https://github.com/AnswerDotAI/fastaistyle/issues/23))
+- Add `chkstyle: ignore-node` pragma to suppress violations across an entire AST node ([#21](https://github.com/AnswerDotAI/fastaistyle/issues/21))
+- Add --show-rule flag, document rule IDs, and skip nbdev_export() cells via cell skip flag ([#20](https://github.com/AnswerDotAI/fastaistyle/issues/20))
+- Add f-string tokens to line-length exemption set ([#19](https://github.com/AnswerDotAI/fastaistyle/issues/19))
+- Add `cell mixes imports and other code` rule for notebooks ([#18](https://github.com/AnswerDotAI/fastaistyle/issues/18))
+
+### Bugs Squashed
+
+- Fix `--fix` corruption from comment-joined closers, non-ASCII spans, string re-indents and class field annotations, and skip nbdev-generated modules ([#26](https://github.com/AnswerDotAI/fastaistyle/pull/26)), thanks to [@jph00](https://github.com/jph00)
+- Count logical lines in the notebook cell-length rules ([#25](https://github.com/AnswerDotAI/fastaistyle/pull/25)), thanks to [@jph00](https://github.com/jph00)
+- Handle backslash continuations after IPython magics; make skip pragma work per notebook cell even on unparseable source ([#22](https://github.com/AnswerDotAI/fastaistyle/issues/22))
+
+
 ## 0.0.17
 
 ### New Features
@@ -69,4 +87,3 @@
 ### New Features
 
 - allow docmented function signatures and restructure as package ([#2](https://github.com/AnswerDotAI/fastaistyle/pull/2)), thanks to [@jph00](https://github.com/jph00)
-
