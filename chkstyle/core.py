@@ -12,6 +12,7 @@ UNUSED_IMPORT_HINT = "remove unused imports; re-exports belong in `__all__` or p
 NB_EXPORT_KEYS = {"export", "exports"}
 NB_MIX_EXEMPT_KEYS = {"export", "exports", "exporti", "exec_doc"}
 ALL_RULES = "all"
+STRING_PART_TYPES = {getattr(tokenize, n) for n in ("FSTRING_MIDDLE", "FSTRING_END", "TSTRING_MIDDLE", "TSTRING_END") if hasattr(tokenize, n)}
 NB_NARRATIVE_RULES = set("too-many-defs long-exported-cell long-example-cell undocumented-export "
     "comment-in-example exported-run example-run".split())
 MAX_CELL_DEFS, MAX_EXPORT_CELL_LINES, MAX_EXAMPLE_CELL_LINES = 3, 50, 10
@@ -34,7 +35,7 @@ class Issue:
 class SourceCtx:
     "Parsed source plus derived checker/fixer state."
     source: str; path: str; lines: list[str]; source_lines: list[str]; tree: object; offsets: list[int]
-    suppressed: set[int]; str_spans: dict; line_infos: dict; dataclass_fields: set
+    suppressed: set[int]; str_spans: dict; line_infos: dict; class_fields: set
 
 def load_config(root="."):
     "Load config from pyproject.toml."
@@ -169,26 +170,9 @@ def max_subscript_depth(node, depth: int = 0) -> int:
     depths = [max_subscript_depth(child, depth) for child in ast.iter_child_nodes(node)]
     return max(depths) if depths else depth
 
-def is_dataclass_decorator(dec) -> bool:
-    if isinstance(dec, ast.Name): return dec.id == "dataclass"
-    if isinstance(dec, ast.Attribute): return dec.attr == "dataclass"
-    if isinstance(dec, ast.Call): return is_dataclass_decorator(dec.func)
-    return False
-
-def _is_basemodel_subclass(node) -> bool:
-    "Check if class inherits from BaseModel."
-    return any((getattr(base, "id", None) or getattr(base, "attr", None)) == "BaseModel" for base in node.bases)
-
-def dataclass_annassigns(tree) -> set:
-    "Dataclass and BaseModel annassigns."
-    annassigns = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef): continue
-        is_dataclass = any(is_dataclass_decorator(dec) for dec in node.decorator_list)
-        if not is_dataclass and not _is_basemodel_subclass(node): continue
-        for stmt in node.body:
-            if isinstance(stmt, ast.AnnAssign): annassigns.add(stmt)
-    return annassigns
+def class_annassigns(tree) -> set:
+    "Annotated assignments in class bodies. These declare fields, so the lhs annotation rule leaves them alone."
+    return {stmt for node in ast.walk(tree) if isinstance(node, ast.ClassDef) for stmt in node.body if isinstance(stmt, ast.AnnAssign)}
 
 def _has_pragma(line, pragma):
     "Check if line has pragma in a comment (after #)."
@@ -517,9 +501,15 @@ def _line_offsets(source: str) -> list[int]:
     if not offsets: offsets.append(0)
     return offsets
 
-def _node_span(node, offsets: list[int]) -> tuple[int, int]:
-    "Absolute source span for an AST node."
-    return offsets[node.lineno - 1] + node.col_offset, offsets[node.end_lineno - 1] + node.end_col_offset
+def _col_chars(line: str, col: int) -> int:
+    "Character offset for UTF-8 byte column `col` of `line`."
+    return len(line.encode("utf-8")[:col].decode("utf-8", "ignore"))
+
+def _node_span(node, ctx: SourceCtx) -> tuple[int, int]:
+    "Absolute source span for an AST node, converting its UTF-8 byte columns to character offsets."
+    start = ctx.offsets[node.lineno - 1] + _col_chars(ctx.source_lines[node.lineno - 1], node.col_offset)
+    end = ctx.offsets[node.end_lineno - 1] + _col_chars(ctx.source_lines[node.end_lineno - 1], node.end_col_offset)
+    return start, end
 
 def _line_span(source_lines: list[str], offsets: list[int], start: int, end: int | None = None) -> tuple[int, int]:
     "Absolute source span for inclusive 1-based line range."
@@ -571,7 +561,7 @@ def _source_ctx(source: str, path: str) -> tuple[SourceCtx | None, list[Issue]]:
     suppressed = suppressed_lines(lines) | _all_assign_lines(tree) | node_suppressed_lines(lines, tree)
     offsets = _line_offsets(source)
     ctx = SourceCtx(source, path, lines, source_lines, tree, offsets, suppressed, ignored_line_len_token_spans(source, lines),
-        token_line_infos(source), dataclass_annassigns(tree))
+        token_line_infos(source), class_annassigns(tree))
     return ctx, []
 
 def _new_issue(ctx: SourceCtx, rule: str, lineno: int, msg: str, lines: list[str], edit=None) -> Issue | None:
@@ -584,7 +574,7 @@ def _append_issue(issues: list[Issue], issue: Issue | None):
 
 def _node_edit(ctx: SourceCtx, node, repl: str) -> tuple[int, int, str]:
     "Edit replacing an AST node."
-    return *_node_span(node, ctx.offsets), repl
+    return *_node_span(node, ctx), repl
 
 def _alias_src(alias) -> str: return alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
 
@@ -676,7 +666,7 @@ def _dict_issue(ctx: SourceCtx, node) -> Issue | None:
 
 def _lhs_issue(ctx: SourceCtx, node) -> Issue | None:
     "Issue for lhs assignment annotation."
-    if node in ctx.dataclass_fields: return None
+    if node in ctx.class_fields: return None
     edit = None
     if node.value is not None and not _has_comments(segment_lines(ctx.source, node)):
         target, value = ast.get_source_segment(ctx.source, node.target), ast.get_source_segment(ctx.source, node.value)
@@ -798,6 +788,14 @@ def _short_import_issues(ctx: SourceCtx) -> list[Issue]:
     flush()
     return issues
 
+def _closer_drops_comma(ctx: SourceCtx, opener_row: int, closer: str) -> bool:
+    "True when the trailing comma before `closer` is redundant. It always is before `]` or `}`. Before `)` it is only when the opener follows a name or a closing bracket, which excludes `(x,)` tuples."
+    if closer != ")": return True
+    toks = ctx.line_infos[opener_row]["tokens"]
+    idxs = [i for i, t in enumerate(toks) if t.type == tokenize.OP and t.string == "("]
+    if not idxs or not idxs[-1]: return False
+    prev = toks[idxs[-1] - 1]
+    return prev.string in ")]" or (prev.type == tokenize.NAME and not keyword.iskeyword(prev.string))
 def _standalone_closer_issues(ctx: SourceCtx) -> list[Issue]:
     "Issues for closing brackets on their own line."
     issues = []
@@ -808,7 +806,10 @@ def _standalone_closer_issues(ctx: SourceCtx) -> list[Issue]:
         if tok.type != tokenize.OP or tok.string not in ")]}": continue
         if _has_comment(ctx.lines[lineno - 1]) or ctx.lines[lineno - 1].strip() != tok.string: continue
         start,end = _line_span(ctx.source_lines, ctx.offsets, lineno - 1, lineno)
-        edit = start, end, f"{_line_body(ctx.source_lines[lineno - 2]).rstrip()}{tok.string}{_line_ending(ctx.source_lines[lineno - 1])}"
+        prev = _line_body(ctx.source_lines[lineno - 2]).rstrip()
+        if prev.endswith(",") and _closer_drops_comma(ctx, info["stack"][-1], tok.string): prev = prev[:-1]
+        joined = f"{prev}{tok.string}{_line_ending(ctx.source_lines[lineno - 1])}"
+        edit = None if _has_comment(ctx.lines[lineno - 2]) else (start, end, joined)
         msg = with_hint("closing bracket on its own line", "move `)`, `]`, or `}` to the end of the previous content line")
         _append_issue(issues, _new_issue(ctx, "closing-bracket", lineno, msg, [ctx.lines[lineno - 1]], edit))
     return issues
@@ -820,6 +821,7 @@ def _continuation_indent_issues(ctx: SourceCtx) -> list[Issue]:
         if not info["stack"] or not info["tokens"]: continue
         first = info["tokens"][0]
         if first.type == tokenize.OP and first.string in ")]}": continue
+        if first.type in STRING_PART_TYPES or first.start[1] != line_indent(ctx.lines[lineno - 1]): continue
         expected = first_line_indent(ctx.lines, info["stack"][-1]) + 4
         if line_indent(ctx.lines[lineno - 1]) == expected: continue
         start,end = _line_span(ctx.source_lines, ctx.offsets, lineno)
@@ -837,11 +839,11 @@ def _line_length_issues(ctx: SourceCtx) -> list[Issue]:
         _append_issue(issues, _new_issue(ctx, "line-too-long", lineno, with_hint(f"line >{MAX_LINE_LEN} chars", hint), [line]))
     return issues
 
-def _dataclass_field_semicolon_line(ctx: SourceCtx, lineno: int) -> bool:
-    "Check if a semicolon line only contains dataclass/BaseModel field annotations."
+def _class_field_semicolon_line(ctx: SourceCtx, lineno: int) -> bool:
+    "Check if a semicolon line only contains class field annotations."
     stmts = [node for node in ast.walk(ctx.tree) if isinstance(node, ast.stmt) and getattr(node, "lineno", None) == lineno]
     stmts = [node for node in stmts if not isinstance(node, ast.ClassDef)]
-    return bool(stmts) and all(isinstance(node, ast.AnnAssign) and node in ctx.dataclass_fields for node in stmts)
+    return bool(stmts) and all(isinstance(node, ast.AnnAssign) and node in ctx.class_fields for node in stmts)
 
 def _semicolon_issues(ctx: SourceCtx) -> list[Issue]:
     "Issues for semicolon statement separators."
@@ -856,7 +858,7 @@ def _semicolon_issues(ctx: SourceCtx) -> list[Issue]:
         # A trailing `;` separates nothing (in notebook cells it's the output-suppression idiom) - only count separators with a statement after them
         cols = [c for c in cols if line[c + 1:].strip() and not line[c + 1:].lstrip().startswith("#")]
         if not cols: continue
-        if _dataclass_field_semicolon_line(ctx, lineno): continue
+        if _class_field_semicolon_line(ctx, lineno): continue
         if line.lstrip().startswith("class "): continue
         edit = None
         if not _has_comment(line) and ":" not in line[:min(cols)]:
@@ -954,14 +956,19 @@ def check_source(source: str, path: str, check_unused: bool=True) -> list[tuple]
     "Check source code string for style violations."
     return [issue.violation() for issue in source_issues(source, path, check_unused=check_unused)]
 
+def _is_generated(source: str) -> bool:
+    "nbdev writes this header into every exported module. The notebook is the source to check."
+    return "AUTOGENERATED! DO NOT EDIT!" in source[:200]
+
 def check_file(path: str) -> list[tuple]:
-    "Check Python file for style violations."
+    "Check Python file for style violations. nbdev-generated modules are skipped."
     with open(path, encoding="utf-8") as f: source = f.read()
-    return check_source(source, path)
+    return [] if _is_generated(source) else check_source(source, path)
 
 def fix_file(path: str, selected: set[str]) -> bool:
-    "Fix Python file in place."
+    "Fix Python file in place. nbdev-generated modules are skipped."
     with open(path, encoding="utf-8") as f: source = f.read()
+    if _is_generated(source): return False
     fixed, changes = fix_source(source, path, selected)
     if not changes: return False
     with open(path, "w", encoding="utf-8") as f: f.write(fixed)
