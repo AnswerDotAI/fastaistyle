@@ -137,6 +137,12 @@ nb-narrative = false  # disable the notebook narrative rules
 
 Command-line skip arguments override config values. `--ignore` adds rule IDs to configured ignores; `--fix-rule` selects the fixer rules for that run when provided. Rule ids are shown in each section header below, and `--show-rule` includes them in violation output.
 
+Settings shared by all your projects go in `$XDG_CONFIG_HOME/chkstyle/config.toml` (`~/.config/chkstyle/config.toml` by default), with the same keys at top level. A project's `[tool.chkstyle]` adds to it: `skip_paths`, `ignore` and `fix` lists are concatenated, `skip-path-re` patterns are joined so either matches, and other keys take the project's value.
+
+```toml
+skip_paths = ["_docs", "_proc", "_modidx.py", "node_modules"]
+```
+
 ## What It Checks
 
 ### `dict literal with 3+ identifier keys` (`dict-literal`)

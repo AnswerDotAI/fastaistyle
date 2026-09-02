@@ -1,5 +1,5 @@
 # chkstyle: skip
-import json, textwrap
+import json, textwrap, ast
 
 import chkstyle
 
@@ -928,3 +928,22 @@ def test_chkstyle_fix_resplits_wide_expressions(tmp_path):
     before = p2.read_text(encoding="utf-8")
     chkstyle.main(["chkstyle", "--fix", str(p2)])
     assert p2.read_text(encoding="utf-8") == before
+
+def test_get_source_segment_matches_ast():
+    src = 'x = {"a": 1,\n     "é": [2, 3]}\ny = "ü"; z = f(1,\n  2)\n'
+    for node in ast.walk(ast.parse(src)):
+        if hasattr(node, "lineno"): assert chkstyle.get_source_segment(src, node) == ast.get_source_segment(src, node)
+
+def test_user_config_skips_add_to_project_config(tmp_path, monkeypatch, capsys):
+    (tmp_path / "xdg/chkstyle").mkdir(parents=True)
+    (tmp_path / "xdg/chkstyle/config.toml").write_text('skip_paths = ["_proc"]\n')
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text('[tool.chkstyle]\nskip_paths = ["gen"]\n')
+    for d in ("_proc", "gen", "src"):
+        (proj / d).mkdir()
+        (proj / d / "t.py").write_text("x: int = 1\n")
+    chkstyle.main(["chkstyle", str(proj)])
+    out = capsys.readouterr().out
+    assert "src/t.py" in out and "_proc" not in out and "gen/t.py" not in out

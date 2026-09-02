@@ -1,4 +1,4 @@
-import ast, io, json, keyword, math, os, re, symtable, sys, tokenize
+import ast, functools, io, json, keyword, math, os, re, symtable, sys, tokenize
 from dataclasses import dataclass
 from fastcore.nbio import mk_cell
 try: import tomllib
@@ -37,12 +37,30 @@ class SourceCtx:
     source: str; path: str; lines: list[str]; source_lines: list[str]; tree: object; offsets: list[int]
     suppressed: set[int]; str_spans: dict; line_infos: dict; class_fields: set
 
-def load_config(root="."):
-    "Load config from pyproject.toml."
-    path = os.path.join(root, "pyproject.toml")
+_LIST_KEYS = ("skip_paths", "ignore", "fix")
+
+def _read_toml(path):
     if not os.path.exists(path): return {}
-    with open(path, "rb") as f: data = tomllib.load(f)
-    return data.get("tool", {}).get("chkstyle", {})
+    with open(path, "rb") as f: return tomllib.load(f)
+
+def _norm_keys(cfg: dict) -> dict:
+    "Fold the `skip-paths` spelling into `skip_paths`."
+    cfg = dict(cfg)
+    if "skip-paths" in cfg: cfg["skip_paths"] = _as_list(cfg.pop("skip-paths")) + _as_list(cfg.get("skip_paths"))
+    return cfg
+
+def user_config() -> dict:
+    "Settings shared by every project: `$XDG_CONFIG_HOME/chkstyle/config.toml`, `~/.config` by default."
+    return _norm_keys(_read_toml(os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "chkstyle", "config.toml")))
+
+def load_config(root="."):
+    "Config from `root`'s pyproject.toml, added to the user config: lists concatenate, skip regexes join, other keys take the project's value."
+    user, proj = user_config(), _norm_keys(_read_toml(os.path.join(root, "pyproject.toml")).get("tool", {}).get("chkstyle", {}))
+    cfg = {**user, **proj}
+    for k in _LIST_KEYS:
+        if k in user and k in proj: cfg[k] = _as_list(user[k]) + _as_list(proj[k])
+    if user.get("skip-path-re") and proj.get("skip-path-re"): cfg["skip-path-re"] = f"(?:{user['skip-path-re']})|(?:{proj['skip-path-re']})"
+    return cfg
 
 def _norm_relpath(path: str) -> str:
     "Normalize a relative path for config matching."
@@ -95,8 +113,20 @@ def dict_keyword_keys(node) -> list[str] | None:
 
 def is_docstring_stmt(stmt) -> bool: return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)
 
+@functools.lru_cache(maxsize=8)
+def _source_lines(source: str) -> list[str]: return source.splitlines(True)
+
+def get_source_segment(source: str, node) -> str | None:
+    "`ast.get_source_segment`, with the line split cached per source so a file stays linear however many nodes are asked about"
+    if getattr(node, "end_lineno", None) is None or getattr(node, "lineno", None) is None: return None
+    lines = _source_lines(source)[node.lineno-1:node.end_lineno]
+    if not lines: return None
+    lines[-1] = lines[-1].encode("utf-8")[:node.end_col_offset].decode("utf-8")
+    lines[0] = lines[0].encode("utf-8")[node.col_offset:].decode("utf-8")
+    return "".join(lines)
+
 def segment_lines(source: str, node) -> list[str]:
-    seg = ast.get_source_segment(source, node)
+    seg = get_source_segment(source, node)
     if not seg: return []
     return [line.rstrip() for line in seg.splitlines()]
 
@@ -625,7 +655,7 @@ def _dict_fix_src(node, source: str, indent: int) -> str | None:
     if not keys or any(value is None for value in node.values): return None
     parts = []
     for key,value in zip(keys, node.values):
-        val_src = ast.get_source_segment(source, value)
+        val_src = get_source_segment(source, value)
         if val_src is None: return None
         parts.append(f"{key}={val_src.strip()}")
     res = f"dict({', '.join(parts)})"
@@ -647,7 +677,7 @@ def _single_docstring_issue(ctx: SourceCtx, stmt) -> Issue | None:
     "Issue for a one-line docstring using triple quotes."
     doc = stmt.value.value
     if "\n" in doc: return None
-    seg = ast.get_source_segment(ctx.source, stmt) or ""
+    seg = get_source_segment(ctx.source, stmt) or ""
     if not re.match(r'^[ \t]*[rRuUbBfF]*\"\"\"', seg): return None
     edit = None if _has_comments(segment_lines(ctx.source, stmt)) else _node_edit(ctx, stmt, repr(doc))
     msg = with_hint("single-line docstring uses triple quotes", "use single quotes or double quotes for one-line docstrings")
@@ -669,14 +699,14 @@ def _lhs_issue(ctx: SourceCtx, node) -> Issue | None:
     if node in ctx.class_fields: return None
     edit = None
     if node.value is not None and not _has_comments(segment_lines(ctx.source, node)):
-        target, value = ast.get_source_segment(ctx.source, node.target), ast.get_source_segment(ctx.source, node.value)
+        target, value = get_source_segment(ctx.source, node.target), get_source_segment(ctx.source, node.value)
         if target and value: edit = _node_edit(ctx, node, f"{target.strip()} = {value.strip()}")
     msg = with_hint("lhs assignment annotation", "move the type hint to function signatures; keep plain assignments in normal code")
     return _new_issue(ctx, "lhs-assignment-annotation", node.lineno, msg, node_lines(ctx.source, ctx.lines, node), edit)
 
 def _from_import_issue(ctx: SourceCtx, node) -> Issue | None:
     "Issue for multi-line from import."
-    seg = ast.get_source_segment(ctx.source, node) or ""
+    seg = get_source_segment(ctx.source, node) or ""
     if "\n" not in seg: return None
     import_lines = node_lines(ctx.source, ctx.lines, node)
     total_len = sum(len(line.strip()) for line in import_lines)
@@ -1245,7 +1275,9 @@ def _fix_rule_set(enabled: bool, cli_rules, cfg: dict) -> set[str]:
 
 _HELP_EPILOG = r'''config (pyproject.toml):
   [tool.chkstyle] accepts skip_paths, skip-path-re, ignore, fix, and nb-narrative, with the same
-  meanings as the flags above. CLI skip flags override config; --ignore adds to it.
+  meanings as the flags above. $XDG_CONFIG_HOME/chkstyle/config.toml (~/.config by default) holds
+  the same keys at top level for every project; a project's lists add to it, and its other keys win.
+  CLI skip flags override config; --ignore adds to it.
   Use --show-rule to see each violation's rule id (what ignore, fix, and --fix-rule take).
 
 skip pragmas (comments in the code being checked):
