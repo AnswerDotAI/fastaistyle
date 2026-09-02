@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.0.19
+
+### New Features
+
+- Read a user-level chkstyle config, and read source segments in linear time ([#27](https://github.com/AnswerDotAI/fastaistyle/pull/27)), thanks to [@jph00](https://github.com/jph00)
+
+
 ## 0.0.18
 
 ### New Features
