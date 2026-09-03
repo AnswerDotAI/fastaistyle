@@ -206,6 +206,11 @@ def test_chkstyle_fix_single_statement_body_never_exceeds_140(tmp_path):
     chkstyle.main(["chkstyle", "--fix", "--fix-rule", "single-statement-body", str(p)])
     assert all(len(line) <= 140 for line in p.read_text(encoding="utf-8").splitlines())
 
+def test_chkstyle_fix_single_statement_body_strips_header_whitespace(tmp_path):
+    p = _write(tmp_path, "t.py", "def discount(price, pct): \n    return (1-pct) * price\n")
+    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "single-statement-body", str(p)])
+    assert p.read_text(encoding="utf-8") == "def discount(price, pct): return (1-pct) * price\n"
+
 def test_chkstyle_violations_include_rule_id(tmp_path):
     violations = _check_py(tmp_path, "x: int = 1\n")
     assert violations[0][2] == "lhs-assignment-annotation"

@@ -920,7 +920,7 @@ def _suite_issue(ctx: SourceCtx, parent_kind: str, node, suite) -> Issue | None:
     edit = None
     if stmt.lineno == header_lineno + 1:
         start,end = _line_span(ctx.source_lines, ctx.offsets, header_lineno, stmt.lineno)
-        edit = start, end, f"{header_line} {body_line.strip()}{_line_ending(ctx.source_lines[stmt.lineno - 1])}"
+        edit = start, end, f"{header_line.rstrip()} {body_line.strip()}{_line_ending(ctx.source_lines[stmt.lineno - 1])}"
     msg = with_hint(f"{parent_kind} single-statement body not one-liner", "put the simple body statement on the header line if it still reads clearly")
     return _new_issue(ctx, "single-statement-body", header_lineno, msg, [header_line, body_line], edit)
 
