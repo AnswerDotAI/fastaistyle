@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.0.20
+
+### Bugs Squashed
+
+- Fix generated-file detection and skipped-cell import tracking ([#29](https://github.com/AnswerDotAI/fastaistyle/pull/29)), thanks to [@jph00](https://github.com/jph00)
+- Fix single-statement-body autofix to strip trailing whitespace from the header line before joining the body ([#28](https://github.com/AnswerDotAI/fastaistyle/issues/28))
+
+
 ## 0.0.19
 
 ### New Features
@@ -14,9 +22,9 @@
 ### New Features
 
 - split over-long condensed dict/expression fixes across multiple lines instead of skipping them ([#24](https://github.com/AnswerDotAI/fastaistyle/issues/24))
-- Use fastcore mk_cell directives for notebook export/mix-exempt detection, supporting nbdev directives in cell metadata ([#23](https://github.com/AnswerDotAI/fastaistyle/issues/23))
+- Use fastcore `mk_cell` directives for notebook export/mix-exempt detection, supporting nbdev directives in cell metadata ([#23](https://github.com/AnswerDotAI/fastaistyle/issues/23))
 - Add `chkstyle: ignore-node` pragma to suppress violations across an entire AST node ([#21](https://github.com/AnswerDotAI/fastaistyle/issues/21))
-- Add --show-rule flag, document rule IDs, and skip nbdev_export() cells via cell skip flag ([#20](https://github.com/AnswerDotAI/fastaistyle/issues/20))
+- Add --show-rule flag, document rule IDs, and skip `nbdev_export`() cells via cell skip flag ([#20](https://github.com/AnswerDotAI/fastaistyle/issues/20))
 - Add f-string tokens to line-length exemption set ([#19](https://github.com/AnswerDotAI/fastaistyle/issues/19))
 - Add `cell mixes imports and other code` rule for notebooks ([#18](https://github.com/AnswerDotAI/fastaistyle/issues/18))
 
