@@ -883,6 +883,7 @@ def test_chkstyle_notebook_narrative_exemptions(tmp_path):
         _md("intro"),
         "def sums(\n    a:int,  # First thing to sum\n    b:int=1 # Second thing to sum\n) -> int: # The sum\n    'Adds.'\n    return a + b\n",
         "#| hide\n# a hidden comment\nq = 1\n",
+        "#| exporti\ndef helper(): pass  # internal\n",
         "import json\n",
         "sums(1)\n",
         "sums(2)  # chkstyle: ignore\n",

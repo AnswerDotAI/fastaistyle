@@ -224,7 +224,7 @@ print(os.getcwd())
 
 Imports named in a simple static `__all__` count as used. Package `__init__.py` files are exempt from this rule so re-export modules stay quiet.
 
-For notebooks, `unused import` is checked across `#| export` / `#| exports` cells as one exported module. If an exported-cell import is only referenced from non-exported cells, `chkstyle` asks you to move it into a non-exported imports cell, recommending the first non-exported cell that already has imports when it can find one. That move-this-import case is reported as `exported-import-nonexport`.
+For notebooks, `unused import` is checked across `#| export` / `#| exports` / `#| exporti` cells as one exported module. If an exported-cell import is only referenced from non-exported cells, `chkstyle` asks you to move it into a non-exported imports cell, recommending the first non-exported cell that already has imports when it can find one. That move-this-import case is reported as `exported-import-nonexport`.
 
 ### `cell mixes imports and other code` (`mixed-imports`)
 Notebooks only. In nbdev, the docs build runs every non-exported cell that contains an import, so mixing imports with other code in one cell either breaks the build or runs code at doc time. This is the same rule nbdev's own "mix of imports and computations" warning uses. Put imports in their own cell.

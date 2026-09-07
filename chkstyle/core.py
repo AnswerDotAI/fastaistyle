@@ -9,7 +9,7 @@ WRAP_WIDTH = 120
 MAX_LINE_LEN = 160
 COMBINE_WIDTH = 140  # max length for lines created by joining/condensing
 UNUSED_IMPORT_HINT = "remove unused imports; re-exports belong in `__all__` or package `__init__.py`"
-NB_EXPORT_KEYS = {"export", "exports"}
+NB_EXPORT_KEYS = {"export", "exports", "exporti"}
 NB_MIX_EXEMPT_KEYS = {"export", "exports", "exporti", "exec_doc"}
 ALL_RULES = "all"
 STRING_PART_TYPES = {getattr(tokenize, n) for n in ("FSTRING_MIDDLE", "FSTRING_END", "TSTRING_MIDDLE", "TSTRING_END") if hasattr(tokenize, n)}
@@ -1147,7 +1147,7 @@ def _narrative_cells(nb, path: str) -> tuple[list[dict], bool]:
             except SyntaxError: pass
             if tree: n = sum(1 for t in tokenize.generate_tokens(io.StringIO(neut).readline) if t.type == tokenize.NEWLINE)
         cells.append(dict(typ="code", path=f"{path}:cell[{cell.get('id', 'unknown')}]", source=source, lines=lines, n=n,
-            tree=tree, export=bool(NB_EXPORT_KEYS & d.keys()), hide="hide" in d,
+            tree=tree, export=bool(NB_EXPORT_KEYS & d.keys()), internal="exporti" in d, hide="hide" in d,
             skip=should_skip_file(lines) or "nbdev_export()" in source))
     return cells, has_exp
 
@@ -1179,7 +1179,7 @@ def _check_notebook_narrative(nb, path: str, violations: list):
             if c["n"] > MAX_EXPORT_CELL_LINES:
                 _narr_issue(c, _first_code_lineno(c), "long-exported-cell", f"exported cell has {c['n']} code lines",
                     "split it, e.g. adding methods with @patch", violations)
-            pubs = [node for node in defs if not node.name.startswith("_")]
+            pubs = [] if c["internal"] else [node for node in defs if not node.name.startswith("_")]
             md_adjacent = (i > 0 and cells[i-1]["typ"] == "md") or (i + 1 < len(cells) and cells[i+1]["typ"] == "md")
             if pubs and not md_adjacent:
                 _narr_issue(c, pubs[0].lineno, "undocumented-export",
