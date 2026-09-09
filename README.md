@@ -327,10 +327,13 @@ nbdev notebooks are literate source: the rendered page is documentation, so code
 | `too-many-defs` | a cell has more than 3 top-level defs or classes |
 | `long-exported-cell` | an exported cell has more than 50 logical code lines (a multiline string is one line) |
 | `long-example-cell` | a non-exported cell has more than 10 logical code lines |
-| `undocumented-export` | an exported cell defines a public def or class with no markdown cell directly before or after |
+| `long-implementation-run` | the exported statement score exceeds 24 without a markdown/non-exported-code pair |
 | `comment-in-example` | a non-exported cell contains a comment (docments excluded): the comment usually belongs in a markdown cell |
-| `exported-run` | more than 2 exported cells in a row with no markdown between |
 | `example-run` | more than 3 non-exported cells in a row with no markdown between (import cells don't count) |
+
+`long-implementation-run` scores statements across cell boundaries, including statements inside functions and classes. Each `def`, `async def`, and `class` scores 3. Other statements score 1. A function with one simple body statement scores 1 total, including property getters and other tiny methods. This is a structural check: line wrapping does not change the score, and a body containing control flow or another definition is not simple. Imports, docstrings, and directives do not count. A markdown cell followed by substantive non-exported code resets the score. Markdown alone and example code alone do not reset it. An intervening exported statement breaks the pair. Import-only and directive-only cells do not break the pair or complete it. Cells that cannot be parsed use their code-line count instead.
+
+The rule reports once when the score exceeds 24, then waits for another pair before reporting again. Splitting or merging exported cells does not change their score. A small private helper does not need its own lesson. Review the amount of implementation between lessons and whether restructuring would help. The checker does not assess what a lesson teaches or tests. This rule replaces `undocumented-export` and `exported-run`.
 
 ## Opting Out
 

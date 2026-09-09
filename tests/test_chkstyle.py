@@ -873,8 +873,8 @@ def test_chkstyle_notebook_narrative_rules(tmp_path):
         "y2\n",
         "y1 + y2\n",
     ])
-    assert _rules(violations) == {"too-many-defs", "long-exported-cell", "undocumented-export",
-        "exported-run", "long-example-cell", "comment-in-example", "example-run"}
+    assert _rules(violations) == {"too-many-defs", "long-exported-cell", "long-implementation-run",
+        "long-example-cell", "comment-in-example", "example-run"}
 
 def test_chkstyle_notebook_narrative_exemptions(tmp_path):
     "Docments, directives, pragmas, hidden cells, and import cells don't trigger narrative rules; ungated notebooks skip them entirely."
@@ -892,6 +892,81 @@ def test_chkstyle_notebook_narrative_exemptions(tmp_path):
     ungated = [_md("intro"), "y1  # a comment\n"]
     assert _check_nb(tmp_path, ungated) == []
     assert _rules(chkstyle.check_notebook(str(_write_nb(tmp_path, "index.ipynb", ungated)))) == {"comment-in-example"}
+
+def test_chkstyle_statements_between_lessons(tmp_path):
+    intro = ["#| default_exp core\n", _md("Introduction")]
+    exported = "#| export\n" + "".join(f"x{i} = {i}\n" for i in range(24))
+    extra = "#| export\ny = 1\n"
+    lesson = [_md("Use the helper."), "helper()\n"]
+    rule = "long-implementation-run"
+    assert rule not in _rules(_check_nb(tmp_path, [*intro, exported]))
+    for gap in [[], [_md("Explanation only")], ["helper()\n"], ["helper()\n", _md("Too late")],
+                [_md("Imports are not a lesson"), "import math\n"],
+                [_md("Directives are not a lesson"), "#| eval: false\n"],
+                [_md("Hidden code is not a lesson"), "#| hide\nhelper()\n"],
+                [_md("Skipped code is not a lesson"), "# chkstyle: skip\nhelper()\n"],
+                [_md("Before implementation"), extra, "helper()\n"]]:
+        assert rule in _rules(_check_nb(tmp_path, [*intro, exported, *gap, extra]))
+    violations = _check_nb(tmp_path, [*intro, exported, extra, exported, *lesson, exported, extra])
+    runs = [v for v in violations if v[2] == rule]
+    assert len(runs) == 2
+    assert all("exported statement score 25" in v[3] for v in runs)
+    setup = ["#| export\nimport math\n", "#| export\n", "import json\n"]
+    assert rule not in _rules(_check_nb(tmp_path, [*intro, exported, lesson[0], *setup, lesson[1], exported]))
+
+def test_chkstyle_statement_count_ignores_cell_boundaries(tmp_path):
+    intro, rule = ["#| default_exp core\n"], "long-implementation-run"
+    helper = "def _helper(): return 1\n"
+    variants = ["#| export\n" + helper, "#| exports\nasync " + helper, "#| exporti\n" + helper,
+                (helper, {"nbdev": {"export": "true"}})]
+    for definition in variants:
+        assert rule not in _rules(_check_nb(tmp_path, intro + [definition]*24))
+        assert rule in _rules(_check_nb(tmp_path, intro + [definition]*25))
+    assert rule not in _rules(_check_nb(tmp_path, [*intro, "#| export\n" + helper*24]))
+    assert rule in _rules(_check_nb(tmp_path, [*intro, "#| export\n" + helper*25]))
+    for pragma in ("#| hide", "# chkstyle: skip", "# chkstyle: off"):
+        cell = f"#| export\n{pragma}\n" + helper*25
+        assert rule not in _rules(_check_nb(tmp_path, [*intro, cell]))
+
+def test_chkstyle_tiny_definitions_score_one(tmp_path):
+    intro, rule = ["#| default_exp core\n"], "long-implementation-run"
+    setup = "#| export\n" + "".join(f"x{i} = {i}\n" for i in range(23))
+    for definition in ["def f(): return 1", "def f():\n    return 1", "async def f(): return await g()",
+                       "def f():\n    'Docs.'\n    import math\n    return math.pi", "def f(): x = 1"]:
+        cells = [*intro, setup, "#| export\n" + definition]
+        assert rule not in _rules(_check_nb(tmp_path, cells))
+        assert rule in _rules(_check_nb(tmp_path, [*cells, "#| export\ny = 1"]))
+    client = r"""#| export
+class Client:
+    @property
+    def name(self): return 'client'
+    def __enter__(self): return self
+    def __exit__(self, *args): self.close()
+"""
+    assert rule not in _rules(_check_nb(tmp_path, intro + [client]*4))
+    assert rule in _rules(_check_nb(tmp_path, intro + [client]*4 + ["#| export\ny = 1"]))
+    for definition in ["def f(): x = 1; return x", "def f():\n    if x: return 1",
+                       "def f():\n    match x:\n        case 1: return 1", "def f():\n    def g(): return 1"]:
+        assert rule in _rules(_check_nb(tmp_path, [*intro, setup, "#| export\n" + definition]))
+
+def test_chkstyle_counts_nested_statements_not_layout(tmp_path):
+    intro, rule = ["#| default_exp core\n"], "long-implementation-run"
+    body = r"""class Client:
+    'Client docs.'
+    def run(self):
+        'Method docs.'
+        import math
+        x = math.sqrt(4)
+        if x: return x
+        return 0
+"""
+    extra = "#| export\ny = 1\n"
+    cell = "#| export\n" + body
+    assert rule not in _rules(_check_nb(tmp_path, [*intro, cell, cell, *[extra]*4]))
+    assert rule in _rules(_check_nb(tmp_path, [*intro, cell, cell, *[extra]*5]))
+    wrapped = cell.replace("if x: return x", "if x:\n            return x")
+    assert rule not in _rules(_check_nb(tmp_path, [*intro, wrapped, wrapped, *[extra]*4]))
+    assert rule in _rules(_check_nb(tmp_path, [*intro, wrapped, wrapped, *[extra]*5]))
 
 def test_chkstyle_narrative_counts_logical_lines(tmp_path):
     "Multiline strings are one logical unit, so a big docstring or literal doesn't make a cell 'long'."

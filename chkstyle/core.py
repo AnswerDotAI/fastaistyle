@@ -13,10 +13,10 @@ NB_EXPORT_KEYS = {"export", "exports", "exporti"}
 NB_MIX_EXEMPT_KEYS = {"export", "exports", "exporti", "exec_doc"}
 ALL_RULES = "all"
 STRING_PART_TYPES = {getattr(tokenize, n) for n in ("FSTRING_MIDDLE", "FSTRING_END", "TSTRING_MIDDLE", "TSTRING_END") if hasattr(tokenize, n)}
-NB_NARRATIVE_RULES = set("too-many-defs long-exported-cell long-example-cell undocumented-export "
-    "comment-in-example exported-run example-run".split())
+NB_NARRATIVE_RULES = set("too-many-defs long-exported-cell long-example-cell long-implementation-run "
+    "comment-in-example example-run".split())
 MAX_CELL_DEFS, MAX_EXPORT_CELL_LINES, MAX_EXAMPLE_CELL_LINES = 3, 50, 10
-MAX_EXPORT_RUN, MAX_EXAMPLE_RUN = 2, 3
+MAX_IMPLEMENTATION_SCORE, MAX_EXAMPLE_RUN = 24, 3
 SUPPORTED_FIX_RULES = set("consecutive-short-imports continuation-indent closing-bracket dict-literal inefficient-multiline-expression "
     "lhs-assignment-annotation multi-line-from-import nested-generics semicolon single-line-docstring "
     "single-statement-body unused-import".split())
@@ -1147,7 +1147,7 @@ def _narrative_cells(nb, path: str) -> tuple[list[dict], bool]:
             except SyntaxError: pass
             if tree: n = sum(1 for t in tokenize.generate_tokens(io.StringIO(neut).readline) if t.type == tokenize.NEWLINE)
         cells.append(dict(typ="code", path=f"{path}:cell[{cell.get('id', 'unknown')}]", source=source, lines=lines, n=n,
-            tree=tree, export=bool(NB_EXPORT_KEYS & d.keys()), internal="exporti" in d, hide="hide" in d,
+            tree=tree, export=bool(NB_EXPORT_KEYS & d.keys()), hide="hide" in d,
             skip=should_skip_file(lines) or "nbdev_export()" in source))
     return cells, has_exp
 
@@ -1159,36 +1159,48 @@ def _narr_issue(cell: dict, lineno: int, rule: str, msg: str, hint: str, violati
     if lineno in suppressed_lines(cell["lines"]): return
     violations.append((cell["path"], lineno, rule, with_hint(msg, hint), [cell["lines"][lineno - 1]]))
 
+def _statement_score(tree) -> int:
+    "Score tiny functions as 1 total; otherwise definitions cost 3 and other statements 1."
+    scopes = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    docs = {n.body[0] for n in ast.walk(tree) if isinstance(n, scopes) and ast.get_docstring(n) is not None}
+    stmts = {n for n in ast.walk(tree)
+        if isinstance(n, ast.stmt) and not isinstance(n, (ast.Import, ast.ImportFrom)) and n not in docs}
+    score = sum(3 if isinstance(n, scopes[1:]) else 1 for n in stmts)
+    for n in stmts:
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)): continue
+        body = [o for o in n.body if o in stmts]
+        if len(body) == 1 and sum(isinstance(o, ast.stmt) for o in ast.walk(body[0])) == 1: score -= 3
+    return score
+
 def _check_notebook_narrative(nb, path: str, violations: list):
     "Narrative rules for nbdev docs notebooks: keep cells small and interleave markdown prose with the code."
     cells, has_exp = _narrative_cells(nb, path)
     if not (os.path.basename(path) == "index.ipynb" or has_exp): return
     cells = [c for c in cells if c["typ"] == "md" or not (c["skip"] or c["hide"])]
-    exp_run = ex_run = 0
-    for i, c in enumerate(cells):
+    score = ex_run = 0
+    markdown = False
+    for c in cells:
         if c["typ"] == "md":
-            exp_run = ex_run = 0
+            ex_run, markdown = 0, True
             continue
         body = c["tree"].body if c["tree"] else []
+        n = _statement_score(c["tree"]) if c["tree"] else c["n"]
         defs = [node for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
         if len(defs) > MAX_CELL_DEFS:
             _narr_issue(c, defs[MAX_CELL_DEFS].lineno, "too-many-defs",
                 f"cell has {len(defs)} top-level definitions", "give each idea its own cell", violations)
         if c["export"]:
-            exp_run, ex_run = exp_run + 1, 0
+            prev, score, ex_run = score, score + n, 0
+            if n: markdown = False
             if c["n"] > MAX_EXPORT_CELL_LINES:
                 _narr_issue(c, _first_code_lineno(c), "long-exported-cell", f"exported cell has {c['n']} code lines",
                     "split it, e.g. adding methods with @patch", violations)
-            pubs = [] if c["internal"] else [node for node in defs if not node.name.startswith("_")]
-            md_adjacent = (i > 0 and cells[i-1]["typ"] == "md") or (i + 1 < len(cells) and cells[i+1]["typ"] == "md")
-            if pubs and not md_adjacent:
-                _narr_issue(c, pubs[0].lineno, "undocumented-export",
-                    f"no markdown cell around exported definition `{pubs[0].name}`", "add a markdown cell explaining it", violations)
-            if exp_run == MAX_EXPORT_RUN + 1:
-                _narr_issue(c, _first_code_lineno(c), "exported-run",
-                    f"more than {MAX_EXPORT_RUN} exported cells in a row", "break up exported cells with markdown prose", violations)
+            if prev <= MAX_IMPLEMENTATION_SCORE < score:
+                _narr_issue(c, _first_code_lineno(c), "long-implementation-run",
+                    f"exported statement score {score} since the last markdown/lesson pair (limit {MAX_IMPLEMENTATION_SCORE})",
+                    "review the amount of implementation between lessons, not individual cell boundaries", violations)
         else:
-            exp_run = 0
+            if n and markdown: score, markdown = 0, False
             if c["n"] > MAX_EXAMPLE_CELL_LINES:
                 _narr_issue(c, _first_code_lineno(c), "long-example-cell", f"example cell has {c['n']} code lines",
                     "split it and show the intermediate results", violations)
