@@ -639,6 +639,18 @@ def test_chkstyle_skips_ipython_magics(tmp_path):
     assert not _has_msg(msgs, "syntax error"), msgs
     assert _has_msg(msgs, "lhs assignment annotation"), msgs
 
+def test_chkstyle_assigned_magics_and_literal_text(tmp_path):
+    sources = ["v = %apl ⍳3\nx: int = 2", "files = !ls\ny: int = 3", "len??\nz: int = 4",
+        "if ready:\n    v = %apl ⍳3\nx: int = 5", 'text = """literal\n%apl ⍳3\n"""\nx: int = 6']
+    issues = _check_nb(tmp_path, sources)
+    assert not _has_msg(_msgs(issues), "syntax error"), issues
+    assert [(i[0].split(':cell')[1], i[1]) for i in issues if i[2] == 'lhs-assignment-annotation'] == [
+        ('[cell0]', 2), ('[cell1]', 2), ('[cell2]', 2), ('[cell3]', 3), ('[cell4]', 4)]
+    p = _write_nb(tmp_path, 't.ipynb', sources)
+    assert chkstyle.fix_notebook(str(p), {'lhs-assignment-annotation', 'single-statement-body'})
+    cells = json.loads(p.read_text())['cells']
+    assert [c['source'] for c in cells] == [s.replace(': int', '') for s in sources]
+
 def test_chkstyle_flags_bare_lhs_annotation(tmp_path):
     assert _has_msg(_msgs(_check_py(tmp_path, """
         x: int

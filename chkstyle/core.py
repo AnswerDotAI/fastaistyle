@@ -1,8 +1,6 @@
-import ast, functools, io, json, keyword, math, os, re, symtable, sys, tokenize
+import ast, functools, io, json, keyword, math, os, re, symtable, sys, tokenize, tomllib
 from dataclasses import dataclass
 from fastcore.nbio import mk_cell
-try: import tomllib
-except ImportError: import tomli as tomllib
 
 SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".venv", "venv", "dist", "build"}
 WRAP_WIDTH = 120
@@ -967,17 +965,18 @@ def source_issues(source: str, path: str, check_unused: bool=True) -> list[Issue
         for kind,owner,suite in _suite_items(node): _append_issue(issues, _suite_issue(ctx, kind, owner, suite))
     return issues
 
-def _fix_source_once(source: str, path: str, selected: set[str]) -> str:
+def _fix_source_once(source: str, path: str, selected: set[str], notebook=False) -> str:
     "Apply one conservative fix pass."
     check_unused = _rule_enabled("unused-import", selected)
-    edits = [issue.edit for issue in source_issues(source, path, check_unused=check_unused) if issue.edit and _rule_enabled(issue.rule, selected)]
+    issues = _cell_issues(source, path, check_unused) if notebook else source_issues(source, path, check_unused)
+    edits = [issue.edit for issue in issues if issue.edit and _rule_enabled(issue.rule, selected)]
     return _apply_edits(source, edits)
 
-def fix_source(source: str, path: str, selected: set[str]) -> tuple[str, int]:
+def fix_source(source: str, path: str, selected: set[str], notebook=False) -> tuple[str, int]:
     "Fix source, returning new source and number of passes that changed it."
     changes = 0
     for _i in range(8):
-        fixed = _fix_source_once(source, path, selected)
+        fixed = _fix_source_once(source, path, selected, notebook)
         if fixed == source: break
         source, changes = fixed, changes + 1
     return source, changes
@@ -1009,19 +1008,41 @@ def _cell_source(cell) -> str:
     return source if isinstance(source, str) else "".join(source)
 
 
-_IPY_LINE_RE = re.compile(r"(\s*)([!%?].*)$")
-
 def _neutralize_ipython(lines: list[str]) -> list[str]:
-    "Comment out IPython `!shell`/`%magic`/`?help` lines, and their `\\` continuations, so cells parse as Python; `pass` keeps indented blocks non-empty"
-    out, cont = [], False
-    for l in lines:
-        if cont: out.append(f"# {l}")
-        elif m := _IPY_LINE_RE.match(l): out.append(f"{m[1]}pass  # {m[2]}")
-        else:
-            out.append(l)
-            continue
-        cont = l.rstrip().endswith("\\")
-    return out
+    "Mask IPython syntax with equal-length Python placeholders, retaining source positions."
+    from IPython.core.inputtransformer2 import TransformerManager, TokenTransformBase, make_tokens_by_line
+    lines = [line + "\n" for line in lines]
+    manager = TransformerManager()
+    while True:
+        tokens = make_tokens_by_line(lines)
+        candidates = [t for cls in manager.token_transformers if (t := cls.find(tokens))]
+        for t in sorted(candidates, key=TokenTransformBase.sortby):
+            try: transformed = t.transform(lines)
+            except SyntaxError: continue
+            # Token transforms replace a command (including continuations) with one Python line.
+            end = t.start_line + len(lines) - len(transformed) + 1
+            for i in range(t.start_line, end):
+                col = t.start_col if i == t.start_line else 0
+                replacement = "0" if i == t.start_line else ""
+                lines[i] = lines[i][:col] + replacement.ljust(len(lines[i]) - col - 1) + "\n"
+            break
+        else: return [line[:-1] for line in lines]
+
+def _cell_issues(source, path, check_unused=False):
+    "Check Python around magics; never propose an edit spanning a command."
+    if source.lstrip().startswith("%%"): return []
+    original = source.splitlines(True)
+    masked = _neutralize_ipython(source.splitlines())
+    offsets = _line_offsets(source)
+    protected = {i for i, (a, b) in enumerate(zip(original, masked)) if a.rstrip("\r\n") != b}
+    parsed = "".join(b + a[len(a.rstrip("\r\n")):] for a, b in zip(original, masked))
+    issues = source_issues(parsed, path, check_unused)
+    def touches_command(issue):
+        for i in protected:
+            if issue.lineno - 1 <= i < issue.lineno - 1 + max(1, len(issue.lines)): return True
+            if issue.edit and issue.edit[0] < offsets[i] + len(original[i]) and issue.edit[1] > offsets[i]: return True
+        return False
+    return [issue for issue in issues if not touches_command(issue)]
 
 def _notebook_cells(nb, path: str) -> list[dict]:
     "Notebook code cell metadata."
@@ -1035,7 +1056,7 @@ def _notebook_cells(nb, path: str) -> list[dict]:
         d = mk_cell(source, metadata=cell.get("metadata", {})).directives
         lines = _neutralize_ipython(source.splitlines())
         source = "\n".join(lines)
-        cells.append(dict(id=cell_id, path=f"{path}:cell[{cell_id}]", source=source, lines=lines,
+        cells.append(dict(id=cell_id, path=f"{path}:cell[{cell_id}]", source=source, lines=lines, original=_cell_source(cell),
             export=bool(NB_EXPORT_KEYS & d.keys()), skip=should_skip_file(lines) or "nbdev_export()" in source,
             mix_exempt=bool(NB_MIX_EXEMPT_KEYS & d.keys()) or d.get("eval", "").lower() == "false"))
     return cells
@@ -1218,7 +1239,7 @@ def check_notebook(path: str) -> list[tuple]:
     "Check Jupyter notebook for style violations."
     with open(path, encoding="utf-8") as f: nb = json.load(f)
     cells = _notebook_cells(nb, path)
-    violations = [v for cell in cells if not cell["skip"] for v in check_source(cell["source"], cell["path"], check_unused=False)]
+    violations = [issue.violation() for cell in cells if not cell["skip"] for issue in _cell_issues(cell["original"], cell["path"])]
     _check_notebook_unused_imports(cells, path, violations)
     _check_notebook_mixed_imports(cells, violations)
     _check_notebook_narrative(nb, path, violations)
@@ -1231,7 +1252,7 @@ def fix_notebook(path: str, selected: set[str]) -> bool:
     for cell in nb.get("cells", []):
         if cell.get("cell_type") != "code": continue
         source = _cell_source(cell)
-        fixed, changes = fix_source(source, f"{path}:cell[{cell.get('id', 'unknown')}]", selected - {"unused-import"})
+        fixed, changes = fix_source(source, f"{path}:cell[{cell.get('id', 'unknown')}]", selected - {"unused-import"}, notebook=True)
         if not changes: continue
         cell["source"] = fixed if isinstance(cell.get("source", []), str) else fixed.splitlines(True)
         changed = True

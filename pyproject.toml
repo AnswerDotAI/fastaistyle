@@ -7,7 +7,7 @@ name = "fastaistyle"
 dynamic = ["version"]
 description = "Style checker for fast.ai coding conventions"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "Jeremy Howard", email = "j@fast.ai" }]
 classifiers = [
@@ -16,7 +16,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 
-dependencies = ["fastcore>=2.1.18", "tomli; python_version < '3.11'"]
+dependencies = ["fastcore>=2.1.18", "ipython>=9.17.1"]
 
 [project.optional-dependencies]
 dev = [
