@@ -1,1050 +1,293 @@
 # chkstyle: skip
-import json, textwrap, ast
+import ast, json, textwrap
 
 import chkstyle
+import pytest
 
-def _write(tmp_path, name, content):
-    path = tmp_path / name
-    path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
+
+def _source(src): return textwrap.dedent(src).lstrip()
+def _rules(issues): return {v[2] for v in issues}
+def _check(src): return chkstyle.check_source(_source(src), "t.py")
+
+def _write(root, name, src):
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_source(src), encoding="utf-8")
     return path
 
-def _write_nb(tmp_path, name, cells):
-    def _cell(i, src):
-        if isinstance(src, dict): return {"cell_type": "code", "id": f"cell{i}", "metadata": {}, **src}
-        return {"cell_type": "code", "id": f"cell{i}", "source": src[0] if isinstance(src, tuple) else src,
-                "metadata": src[1] if isinstance(src, tuple) else {}}
-    nb = {"cells": [_cell(i, src) for i, src in enumerate(cells)], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
-    path = tmp_path / name
-    path.write_text(json.dumps(nb), encoding="utf-8")
-    return path
+def _notebook(root, cells, name="t.ipynb"):
+    cells = [{"cell_type": "code", "id": f"cell{i}", "metadata": {},
+              **(dict(source=_source(c)) if isinstance(c, str) else c)} for i, c in enumerate(cells)]
+    return _write(root, name, json.dumps(dict(cells=cells, metadata={}, nbformat=4, nbformat_minor=5)))
 
-def _md(src): return {"cell_type": "markdown", "source": src}
+def _check_nb(root, cells, name="t.ipynb"): return chkstyle.check_notebook(str(_notebook(root, cells, name)))
 
-def _check_py(tmp_path, content): return chkstyle.check_file(str(_write(tmp_path, "t.py", content)))
-def _check_nb(tmp_path, cells): return chkstyle.check_notebook(str(_write_nb(tmp_path, "t.ipynb", cells)))
-def _msgs(violations): return {v[3] for v in violations}
-def _has_msg(msgs, prefix): return any(msg.startswith(prefix) for msg in msgs)
+def _fix(src, rules=("all",)):
+    fixed, _ = chkstyle.fix_source(_source(src), "t.py", set(rules))
+    ast.parse(fixed)
+    assert chkstyle.fix_source(fixed, "t.py", set(rules))[0] == fixed
+    return fixed
 
-def test_chkstyle_reports_expected_violations(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, '''
-        def f():
-            """doc"""
-            return 1
+def _run(src):
+    ns = {}
+    exec(src, ns)
+    return ns
 
-        import pathlib
-        x: int = 1
-        data = {"a": 1, "b": 2, "c": 3}
-        a = 1; b = 2
-        from os import (
-            path,
-            environ,
+def test_source_rewrite_preserves_results_and_reaches_a_stable_clean_source():
+    src = _source('''
+        import math
+        import json
+        import os
+        from math import (
+            ceil,
         )
-        if True:
-            y = 1
-        z = dict(
-            a=1,
-            b=2,
-        )
-        long_variable_name_to_trigger_line_length_limit_because_line_is_super_long_and_should_fail_even_without_long_string_literal_or_repeated_dots_in_tests = long_variable_name_to_trigger_line_length_limit_because_line_is_super_long_and_should_fail_even_without_long_string_literal_or_repeated_dots_in_tests
-        def g(x: list[list[int]]): return x
-        '''))
-    expected = {"single-line docstring uses triple quotes", "lhs assignment annotation",
-        "dict literal with 3+ identifier keys", "semicolon statement separator", "multi-line from-import",
-        "if single-statement body not one-liner", "inefficient multiline expression", "line >160 chars", "unused import: pathlib",
-        "nested generics depth 2"}
-    assert all(_has_msg(msgs, msg) for msg in expected), msgs
 
-def test_chkstyle_ignore_and_off_on(tmp_path):
-    assert _check_py(tmp_path, """
+        def summarize(xs: list[list[int]]):
+            """Calculate the summary."""
+            bonus: int = 1
+            cfg = {"scale": 2, "offset": bonus, "label": "→ next"}
+            singleton = (
+                sum(xs),
+            )
+            weights = [
+                    2,
+            ]
+            a = math.floor(singleton[0]); b = ceil(weights[0])
+            if xs:
+                a += cfg["offset"]
+            return json.loads(json.dumps(dict(
+                value=a * b * cfg["scale"],
+                label=cfg["label"])))
+        ''')
+    expected = {"consecutive-short-imports", "unused-import", "multi-line-from-import", "single-line-docstring",
+        "lhs-assignment-annotation", "dict-literal", "closing-bracket", "continuation-indent", "semicolon",
+        "single-statement-body", "nested-generics", "inefficient-multiline-expression"}
+    assert expected <= _rules(_check(src))
+    fixed = _fix(src)
+    assert _check(fixed) == []
+    before, after = _run(src), _run(fixed)
+    for xs in ([], [1, 2, 3]): assert before["summarize"](xs) == after["summarize"](xs)
+    assert "def summarize(xs: list[list]):" in fixed and "→ next" in fixed
+
+
+def test_source_rewrite_protects_field_contracts_comments_and_literal_contents():
+    src = _source('''
+        from dataclasses import dataclass
+
+        @dataclass
+        class Item:
+            value: int; kind: str = "constant"
+
+        unbound: int
+        col = "id"
+        def keep(text): return text
+        text = keep(f"""
+            SELECT {col}
+                    FROM t""")
+        def choose(
+            value: int,  # The value to preserve
+        ):
+            return value
+        if col:  # Keep this explanation with the branch
+            answer = choose(1)
+        costs = dict(
+            cpu=1,  # per minute
+        )
+        invalid_kwargs = {"class": 1, "b": 2, "c": 3}
+        duplicate_keys = {"a": 1, "a": 2, "b": 3}
+        ''')
+    assert _rules(_check(src)) == {"lhs-assignment-annotation", "closing-bracket"}
+    fixed = _fix(src)
+    assert fixed == src
+    ns = _run(fixed)
+    assert ns["Item"](3).kind == "constant" and ns["answer"] == 1
+    assert ns["text"] == "\n    SELECT id\n            FROM t"
+
+
+def test_width_decisions_distinguish_code_from_literal_and_comment_tokens():
+    for width in (80, 81):
+        src = f"if {'x' * width}:\n    return_value = {'y' * 40}\n"
+        assert ("single-statement-body" in _rules(_check(src))) == (width == 80)
+        fixed = _fix(src, ["single-statement-body"])
+        assert fixed == (src.replace(":\n    ", ": ") if width == 80 else src)
+    src = f"a = '{'x' * 180}'\nb = f'prefix {{x}} {'y' * 180}'\nc = 1 # {'z' * 220}\n{'v' * 161} = 'x' # comment\n"
+    assert [(v[2], v[1]) for v in _check(src)] == [("line-too-long", 4)]
+    wide = _source('''
+        result = send({
+            'client_id': client['client_id'], 'redirect_uri': redirect_uri, 'response_type': 'code',
+            'scope': ' '.join(scopes), 'access_type': 'offline', 'prompt': 'consent',
+            'include_granted_scopes': 'true', 'code_challenge': challenge,
+            'code_challenge_method': 'S256', 'state': state})
+        ''')
+    fixed = _fix(wide)
+    assert "dict(client_id=client['client_id']" in fixed and _check(fixed) == []
+    assert all(len(line) <= 140 for line in fixed.splitlines())
+    unsplittable = f"cfg = {{'alpha': 'a' * 200, 'beta': '{'x' * 130}', 'gamma': 3}}\n"
+    assert _fix(unsplittable, ["dict-literal"]) == unsplittable
+
+
+def test_pragmas_and_generated_headers_protect_sources_from_checking_and_fixing(tmp_path):
+    src = _source('''
         x: int = 1  # chkstyle: ignore
         # chkstyle: ignore
         y: int = 2
         # chkstyle: off
         z: int = 3
         # chkstyle: on
-        """) == []
-
-def test_chkstyle_ignore_node(tmp_path):
-    reg = '''
-        d = {
+        registry = {  # chkstyle: ignore-node
             'a/b': lambda x: x,
             'c/d': lambda x: x * 2,
         }
-        '''
-    msgs = _msgs(_check_py(tmp_path, reg))
-    assert _has_msg(msgs, "inefficient multiline expression") and _has_msg(msgs, "closing bracket on its own line")
-    assert _check_py(tmp_path, reg.replace("d = {", "d = {  # chkstyle: ignore-node")) == []
-    assert _check_py(tmp_path, reg.replace("d = {", "# chkstyle: ignore-node\n        d = {")) == []
-
-def test_chkstyle_skip_file(tmp_path):
-    assert _check_py(tmp_path, """
-        # chkstyle: skip
-        x: int = 1
-        data = {"a": 1, "b": 2, "c": 3}
-        """) == []
-
-def test_chkstyle_dict_literal_skips_invalid_kwargs(tmp_path):
-    assert not _has_msg(_msgs(_check_py(tmp_path, """
-        a = {"class": 1, "b": 2, "c": 3}
-        b = {"a": 1, "a": 2, "b": 3}
-        """)), "dict literal with 3+ identifier keys")
-
-def test_chkstyle_allows_multiline_strings(tmp_path):
-    assert _check_py(tmp_path, '''
-        value = """
-        line one
-        line two
-        """
-        ''') == []
-
-def test_chkstyle_long_line_with_short_string_still_fails(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        some_really_long_variable_name_that_keeps_going_and_going_and_going = some_really_long_func_name_that_keeps_going_and_going_and_going(another_really_long_variable_name_that_keeps_going_and_going_and_going, "x")
-        """))
-    assert _has_msg(msgs, "line >160 chars"), msgs
-
-def test_chkstyle_long_line_mostly_string_is_exempt(tmp_path):
-    assert _check_py(tmp_path, f'msg = "{"x" * 180}"\n') == []
-
-def test_chkstyle_long_fstring_line_is_exempt(tmp_path):
-    assert _check_py(tmp_path, f'msg = f"prefix {{x}} {"y" * 180}"\n') == []
-
-def test_chkstyle_long_comments_are_exempt(tmp_path):
-    long_comment = "# " + "x" * 220
-    trailing_comment = "x = 1  # " + "y" * 220
-    assert not _has_msg(_msgs(_check_py(tmp_path, f"{long_comment}\n{trailing_comment}\n")), "line >160 chars")
-
-def test_chkstyle_long_code_before_comment_still_fails(tmp_path):
-    code = "some_really_long_variable_name_that_keeps_going_and_going_and_going = some_really_long_func_name_that_keeps_going_and_going_and_going(another_really_long_variable_name_that_keeps_going_and_going_and_going)"
-    msgs = _msgs(_check_py(tmp_path, f"{code}  # comment\n"))
-    assert _has_msg(msgs, "line >160 chars"), msgs
-
-def test_chkstyle_allows_decorated_inner_defs(tmp_path):
-    assert _check_py(tmp_path, """
-        def dec(f): return f
-
-        def outer():
-            @dec
-            def inner(): return 1
-        """) == []
-
-def test_chkstyle_allows_multiline_string_calls(tmp_path):
-    assert _check_py(tmp_path, '''
-        def f():
-            return _lines("""
-            one
-            two
-            """)
-        ''') == []
-
-def test_chkstyle_allows_trailing_comments(tmp_path):
-    assert _check_py(tmp_path, """
-        def ship_new(
-            name: str,              # Project name
-            package: str = None,    # Package name
-            force: bool = False,    # Overwrite existing
-        ):
-            return name
-
-        __all__ = [
-            "one",   # first
-            "two"]   # second
-        """) == []
-
-def test_chkstyle_allows_standalone_comments_in_multiline_expr(tmp_path):
-    assert not _has_msg(_msgs(_check_py(tmp_path, """
-        result = call(
-            # explain
-            a,
-            b)
-        """)), "inefficient multiline expression")
-
-def test_chkstyle_if_else_single_statement(tmp_path):
-    assert _has_msg(_msgs(_check_py(tmp_path, """
-        if branch == expected:
-            print(f"ok")
-        else:
-            print(f"not ok")
-        """)), "if single-statement body not one-liner")
-
-def test_chkstyle_single_statement_body_allows_comments(tmp_path):
-    assert not _has_msg(_msgs(_check_py(tmp_path, """
-        if ready:  # explain
-            return True
-
-        if waiting:
-            # explain
-            return False
-
-        if done:
-            return None  # explain
-        """)), "single-statement body not one-liner")
-
-def test_chkstyle_single_statement_body_allows_long_combined_line(tmp_path):
-    assert not _has_msg(_msgs(_check_py(tmp_path, """
-        if ready:
-            return some_really_long_function_name_that_would_make_the_combined_line_too_long(alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda_arg, mu)
-        """)), "if single-statement body not one-liner")
-
-def test_chkstyle_single_statement_body_combined_over_140_not_flagged(tmp_path):
-    assert not _has_msg(_msgs(_check_py(tmp_path, f"""
-        if {"x" * 93}:
-            return_value = {"y" * 40}
-        """)), "if single-statement body not one-liner")
-
-def test_chkstyle_single_statement_body_combined_at_most_140_flagged(tmp_path):
-    assert _has_msg(_msgs(_check_py(tmp_path, f"""
-        if {"x" * 80}:
-            return_value = {"y" * 40}
-        """)), "if single-statement body not one-liner")
-
-def test_chkstyle_fix_single_statement_body_never_exceeds_140(tmp_path):
-    p = _write(tmp_path, "t.py", f"""
-        if {"x" * 93}:
-            return_value = {"y" * 40}
-        """)
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "single-statement-body", str(p)])
-    assert all(len(line) <= 140 for line in p.read_text(encoding="utf-8").splitlines())
-
-def test_chkstyle_fix_single_statement_body_strips_header_whitespace(tmp_path):
-    p = _write(tmp_path, "t.py", "def discount(price, pct): \n    return (1-pct) * price\n")
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "single-statement-body", str(p)])
-    assert p.read_text(encoding="utf-8") == "def discount(price, pct): return (1-pct) * price\n"
-
-def test_chkstyle_violations_include_rule_id(tmp_path):
-    violations = _check_py(tmp_path, "x: int = 1\n")
-    assert violations[0][2] == "lhs-assignment-annotation"
-
-def test_chkstyle_ignore_single_statement_body_by_rule_id(tmp_path):
-    p = _write(tmp_path, "t.py", "if True:\n    y = 1\n")
-    assert chkstyle.main(["chkstyle", "--ignore", "single-statement-body", str(p)]) == 0
-
-def test_chkstyle_main_accepts_file_path(tmp_path):
-    assert chkstyle.main(["chkstyle", str(_write(tmp_path, "t.py", "x: int = 1\n"))]) == 1
-
-def test_chkstyle_main_shows_style_guidance_on_violations(tmp_path, capsys):
-    chkstyle.main(["chkstyle", str(_write(tmp_path, "t.py", "x: int = 1\n"))])
-    out = capsys.readouterr().out
-    assert "Style guidance: fix violations in the spirit of the fast.ai style guide." in out
-    assert "Never apply a change that satisfies chkstyle but makes the code less clear." in out
-
-def test_chkstyle_main_show_rule_flag(tmp_path, capsys):
-    p = _write(tmp_path, "t.py", "x: int = 1\n")
-    chkstyle.main(["chkstyle", str(p)])
-    assert "[lhs-assignment-annotation]" not in capsys.readouterr().out
-    chkstyle.main(["chkstyle", "--show-rule", str(p)])
-    assert "[lhs-assignment-annotation]" in capsys.readouterr().out
-
-def test_chkstyle_ignore_config_and_cli(tmp_path, capsys):
-    p = _write(tmp_path, "t.py", "x: int = 1\n")
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.chkstyle]
-        ignore = ["lhs-assignment-annotation"]
-        """), encoding="utf-8")
-    assert chkstyle.main(["chkstyle", str(p)]) == 0
-    assert "found 0 potential violation(s)" in capsys.readouterr().out
-    assert chkstyle.main(["chkstyle", "--ignore", "lhs-assignment-annotation", str(p)]) == 0
-
-def test_chkstyle_main_accepts_multiple_paths(tmp_path, capsys):
-    p1 = _write(tmp_path, "a.py", "x: int = 1\n")
-    pkg = tmp_path / "pkg"
-    pkg.mkdir()
-    p2 = pkg / "b.py"
-    p2.write_text("y: int = 2\n", encoding="utf-8")
-    assert chkstyle.main(["chkstyle", str(p1), str(pkg)]) == 1
-    out = capsys.readouterr().out
-    assert str(p1) in out and str(p2) in out
-
-def test_chkstyle_config_skip_path_re(tmp_path, capsys):
-    keep_dir, skip_dir, gen_dir = tmp_path / "keep", tmp_path / "skipme", tmp_path / "src" / "generated"
-    keep_dir.mkdir()
-    skip_dir.mkdir()
-    gen_dir.mkdir(parents=True)
-    keep_file = keep_dir / "keep.py"
-    skip_file = skip_dir / "skip.py"
-    gen_file = gen_dir / "gen.py"
-    keep_file.write_text("x: int = 1\n", encoding="utf-8")
-    skip_file.write_text("y: int = 2\n", encoding="utf-8")
-    gen_file.write_text("z: int = 3\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.chkstyle]
-        skip-path-re = "skip|src/gen"
-        """), encoding="utf-8")
-    assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
-    out = capsys.readouterr().out
-    assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
-
-def test_chkstyle_config_skip_paths(tmp_path, capsys):
-    keep_dir, skip_dir, gen_dir = tmp_path / "keep", tmp_path / "skipme", tmp_path / "src" / "generated"
-    keep_dir.mkdir()
-    skip_dir.mkdir()
-    gen_dir.mkdir(parents=True)
-    keep_file = keep_dir / "keep.py"
-    skip_file = skip_dir / "skip.py"
-    gen_file = gen_dir / "gen.py"
-    keep_file.write_text("x: int = 1\n", encoding="utf-8")
-    skip_file.write_text("y: int = 2\n", encoding="utf-8")
-    gen_file.write_text("z: int = 3\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.chkstyle]
-        skip_paths = ["skipme", "src/generated"]
-        """), encoding="utf-8")
-    assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
-    out = capsys.readouterr().out
-    assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
-
-def test_chkstyle_cli_skip_path_re(tmp_path, capsys):
-    keep_dir, skip_dir, gen_dir = tmp_path / "keep", tmp_path / "skipme", tmp_path / "src" / "generated"
-    keep_dir.mkdir()
-    skip_dir.mkdir()
-    gen_dir.mkdir(parents=True)
-    keep_file = keep_dir / "keep.py"
-    skip_file = skip_dir / "skip.py"
-    gen_file = gen_dir / "gen.py"
-    keep_file.write_text("x: int = 1\n", encoding="utf-8")
-    skip_file.write_text("y: int = 2\n", encoding="utf-8")
-    gen_file.write_text("z: int = 3\n", encoding="utf-8")
-    assert chkstyle.main(["chkstyle", "--skip-path-re", "skip|src/gen", str(tmp_path)]) == 1
-    out = capsys.readouterr().out
-    assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
-
-def test_chkstyle_cli_skip_path(tmp_path, capsys):
-    keep_dir, skip_dir, gen_dir = tmp_path / "keep", tmp_path / "skipme", tmp_path / "src" / "generated"
-    keep_dir.mkdir()
-    skip_dir.mkdir()
-    gen_dir.mkdir(parents=True)
-    keep_file = keep_dir / "keep.py"
-    skip_file = skip_dir / "skip.py"
-    gen_file = gen_dir / "gen.py"
-    keep_file.write_text("x: int = 1\n", encoding="utf-8")
-    skip_file.write_text("y: int = 2\n", encoding="utf-8")
-    gen_file.write_text("z: int = 3\n", encoding="utf-8")
-    assert chkstyle.main(["chkstyle", "--skip-path", "skipme", "--skip-path", "src/generated", str(tmp_path)]) == 1
-    out = capsys.readouterr().out
-    assert str(keep_file) in out and str(skip_file) not in out and str(gen_file) not in out
-
-def test_chkstyle_config_skip_file_with_path_re(tmp_path, capsys):
-    keep_file = _write(tmp_path, "keep.py", "x: int = 1\n")
-    skip_file = _write(tmp_path, "_modidx.py", "y: int = 2\n")
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.chkstyle]
-        skip-path-re = "_modidx.py"
-        """), encoding="utf-8")
-    assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
-    out = capsys.readouterr().out
-    assert str(keep_file) in out and str(skip_file) not in out
-
-def test_chkstyle_config_skip_file_with_skip_paths(tmp_path, capsys):
-    keep_file = _write(tmp_path, "keep.py", "x: int = 1\n")
-    skip_file = _write(tmp_path, "_modidx.py", "y: int = 2\n")
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.chkstyle]
-        skip_paths = ["_modidx.py"]
-        """), encoding="utf-8")
-    assert chkstyle.main(["chkstyle", str(tmp_path)]) == 1
-    out = capsys.readouterr().out
-    assert str(keep_file) in out and str(skip_file) not in out
-
-def test_chkstyle_subdir_target_uses_parent_pyproject(monkeypatch, tmp_path, capsys):
-    pkg = tmp_path / "pkg"
-    pkg.mkdir()
-    keep_file = pkg / "keep.py"
-    skip_file = pkg / "_modidx.py"
-    keep_file.write_text("x: int = 1\n", encoding="utf-8")
-    skip_file.write_text("y: int = 2\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.chkstyle]
-        skip-path-re = "_modidx.py"
-        """), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    assert chkstyle.main(["chkstyle", "pkg/"]) == 1
-    out = capsys.readouterr().out
-    assert str(keep_file.relative_to(tmp_path)) in out and str(skip_file.relative_to(tmp_path)) not in out
-
-def test_chkstyle_fix_uses_config_allowlist(tmp_path):
-    p = _write(tmp_path, "t.py", """
-        data = {"a": 1, "b": 2, "c": 3}
-        x: int = 1
-        """)
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.chkstyle]
-        fix = ["dict-literal"]
-        """), encoding="utf-8")
-    assert chkstyle.main(["chkstyle", "--fix", str(p)]) == 1
-    fixed = p.read_text(encoding="utf-8")
-    assert "data = dict(a=1, b=2, c=3)" in fixed
-    assert "x: int = 1" in fixed
-
-def test_chkstyle_fix_lhs_annotation_preserves_dataclass_and_bare_annotations(tmp_path):
-    p = _write(tmp_path, "t.py", """
-        from dataclasses import dataclass
-
-        @dataclass
-        class A:
-            x: int = 1
-
-        y: int
-        z: int = 2
-        """)
-    assert chkstyle.main(["chkstyle", "--fix", "--fix-rule", "lhs-assignment-annotation", str(p)]) == 1
-    fixed = p.read_text(encoding="utf-8")
-    assert "x: int = 1" in fixed
-    assert "y: int" in fixed
-    assert "z = 2" in fixed
-    assert "z: int = 2" not in fixed
-
-def test_chkstyle_fix_common_rules(tmp_path):
-    p = _write(tmp_path, "t.py", '''
-        import os
-        import sys
-
-        def f(x: list[list[int]]):
-            """doc"""
-            return dict(
-                a=1,
-                b=2)
-
-        if ready:
-            print(True)
+        text = "chkstyle: off"
+        answer: int = 4
         ''')
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "consecutive-short-imports", "--fix-rule", "nested-generics",
-        "--fix-rule", "single-line-docstring", "--fix-rule", "single-statement-body", "--fix-rule", "inefficient-multiline-expression", str(p)])
-    fixed = p.read_text(encoding="utf-8")
-    assert "import os, sys" in fixed
-    assert "def f(x: list[list]):" in fixed
-    assert "'doc'" in fixed
-    assert "return dict(a=1, b=2)" in fixed
-    assert "if ready: print(True)" in fixed
+    assert [(v[2], v[1]) for v in _check(src)] == [("lhs-assignment-annotation", 12)]
+    fixed = _fix(src)
+    assert fixed == src.replace("answer: int", "answer")
+    assert _check(fixed) == []
+    generated = '"""' + "Module documentation. " * 15 + '"""\n# AUTOGENERATED! DO NOT EDIT! File to edit: ../nbs/core.ipynb.\nimport os\n'
+    for name, content in (("generated.py", generated), ("skipped.py", "# chkstyle: skip\nnot valid Python!\n")):
+        path = _write(tmp_path, name, content)
+        assert chkstyle.check_file(str(path)) == []
+        assert not chkstyle.fix_file(str(path), {"all"})
+        assert path.read_text() == content
 
-def test_chkstyle_fix_imports_brackets_indent_and_semicolon(tmp_path):
-    p = _write(tmp_path, "t.py", """
-        import os
-        import sys
-        from os import (
-            path,
-            environ,
-        )
-        data = {"a": 1, "b": 2, "c": 3}
-        result = call(
-                alpha,
-                beta,
-        )
-        a = 1; b = 2
-        with ctx():
-            c = 3; d = 4
-        print(path, environ, sys.version)
-        """)
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "unused-import", "--fix-rule", "multi-line-from-import",
-        "--fix-rule", "closing-bracket", "--fix-rule", "continuation-indent", "--fix-rule", "semicolon", "--fix-rule", "dict-literal", str(p)])
-    fixed = p.read_text(encoding="utf-8")
-    assert "import os" not in fixed
-    assert "import sys" in fixed
-    assert "from os import path, environ" in fixed
-    assert "data = dict(a=1, b=2, c=3)" in fixed
-    assert "    alpha,\n    beta)" in fixed
-    assert "a = 1\nb = 2" in fixed
-    assert "with ctx():\n    c = 3\n    d = 4" in fixed
 
-def test_chkstyle_fix_closing_bracket_skips_comment_lines(tmp_path):
-    p = _write(tmp_path, "t.py", """
-        costs = dict(
-            cpu=1, # per minute
-        )
-        head = call(
-            alpha,
-            # beta,
-        )
-        """)
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "closing-bracket", str(p)])
-    fixed = p.read_text(encoding="utf-8")
-    assert "cpu=1, # per minute\n)" in fixed
-    assert "# beta,\n)" in fixed
-
-def test_chkstyle_fix_multiline_expr_with_non_ascii_keeps_following_code(tmp_path):
-    p = _write(tmp_path, "t.py", """
-        def f():
-            return call(
-                alpha,
-                beta="→ next")
-
-        def g(): return 1
-        """)
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "inefficient-multiline-expression", str(p)])
-    fixed = p.read_text(encoding="utf-8")
-    assert "beta='→ next')\n\ndef g(): return 1" in fixed
-
-def test_chkstyle_fix_continuation_indent_skips_string_lines(tmp_path):
-    p = _write(tmp_path, "t.py", '''
-        rows = q("""
-            SELECT 1
-                    FROM t""",
-            uid)
-        ''')
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "continuation-indent", str(p)])
-    assert '\n            FROM t"""' in p.read_text(encoding="utf-8")
-    p = _write(tmp_path, "t.py", '''
-        rows = q(f"""
-            SELECT {col}
-                    FROM t""",
-            uid)
-        ''')
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "continuation-indent", str(p)])
-    assert '\n            FROM t"""' in p.read_text(encoding="utf-8")
-    p = _write(tmp_path, "t.py", '''
-        rows = q(f"""
-            SELECT {col}
-        """, uid)
-        ''')
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "continuation-indent", str(p)])
-    assert '\n""", uid)' in p.read_text(encoding="utf-8")
-
-def test_chkstyle_lhs_annotation_skips_class_bodies(tmp_path):
-    src = """
-        class Dialog: id:int; name:str; mode:int=2
-        x:int = 1
-        """
-    assert [v[1] for v in _check_py(tmp_path, src) if v[2] == "lhs-assignment-annotation"] == [2]
-    p = _write(tmp_path, "t.py", src)
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "lhs-assignment-annotation", str(p)])
-    assert "mode:int=2" in p.read_text(encoding="utf-8")
-
-def test_chkstyle_fix_closing_bracket_drops_trailing_comma(tmp_path):
-    p = _write(tmp_path, "t.py", """
-        res = call(
-            alpha,
-            beta,
-        )
-        one = (
-            alpha,
-        )
-        items = [
-            alpha,
-        ]
-        """)
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "closing-bracket", str(p)])
-    fixed = p.read_text(encoding="utf-8")
-    assert "    beta)" in fixed
-    assert "    alpha,)" in fixed
-    assert "    alpha]" in fixed
-
-def test_chkstyle_skips_generated_files(tmp_path):
-    p = _write(tmp_path, "t.py", """
-        # AUTOGENERATED! DO NOT EDIT! File to edit: ../nbs/00_core.ipynb.
-        import os
-        import sys
-        """)
-    assert chkstyle.check_file(str(p)) == []
-    chkstyle.main(["chkstyle", "--fix", str(p)])
-    assert "import os\nimport sys" in p.read_text(encoding="utf-8")
-    doc_first = _write(tmp_path, "d.py", '''
-        """A module docstring, as nbdev v3 writes it, followed by a long paragraph that pushes the header past the first two hundred characters of the file so a prefix check would miss it entirely."""
-        # AUTOGENERATED! DO NOT EDIT! File to edit: ../nbs/01_doc.ipynb.
-        import os
-        ''')
-    assert chkstyle.check_file(str(doc_first)) == []
-
-def test_chkstyle_allows_standalone_closer_with_comment(tmp_path):
-    assert not _has_msg(_msgs(_check_py(tmp_path, """
-        result = call(
-            alpha,
-        )  # explain
-        """)), "closing bracket on its own line")
-
-def test_chkstyle_allows_multiline_def_with_docments(tmp_path):
-    assert _check_py(tmp_path, """
-        def ws_clone_cli(
-            repos_file: str = "repos.txt",  # File containing repo list
-            workers: int = 16,  # Number of parallel workers
-        ): ws_clone(repos_file, workers)
-        """) == []
-
-def test_chkstyle_flags_consecutive_short_imports(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        import os
-        import sys
-        import pathlib
-        """))
-    assert _has_msg(msgs, "consecutive short imports"), msgs
-
-def test_chkstyle_flags_inefficient_multiline_from_import(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        from .session import (
-            DEFAULT_MAX_BUFFER_BYTES,
-            DEFAULT_MAX_OUTPUT_BYTES,
-            BgtermError,
-            PollResult,
-            Session,
-            close_session,
-            kill_session,
-            list_sessions,
-            poll_session,
-            read_output,
-            start_session,
-            terminate_session,
-            wait_for_result,
-            write_stdin)
-        """))
-    assert _has_msg(msgs, "inefficient multi-line from-import"), msgs
-
-def test_chkstyle_flags_closing_bracket_on_own_line(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        result = some_really_long_function_name_for_testing_closer_layout(
-            alpha_parameter_name=first_value_identifier,
-            beta_parameter_name=second_value_identifier,
-        )
-        """))
-    assert _has_msg(msgs, "closing bracket on its own line"), msgs
-
-def test_chkstyle_flags_continuation_indent(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        result = some_really_long_function_name_for_testing_indent_layout(
-                alpha_parameter_name=first_value_identifier,
-                beta_parameter_name=second_value_identifier)
-        """))
-    assert _has_msg(msgs, "continuation line indent"), msgs
-
-def test_chkstyle_flags_unused_import(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        import os
-        """))
-    assert _has_msg(msgs, "unused import: os"), msgs
-
-def test_chkstyle_allows_dataclass_field_semicolons(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        from dataclasses import dataclass
-
-        @dataclass
-        class Item:
-            rule: str; path: str; lineno: int; msg: str; lines: list[str]
-        """))
-    assert not _has_msg(msgs, "semicolon statement separator"), msgs
-    assert not _has_msg(msgs, "lhs assignment annotation"), msgs
-
-def test_chkstyle_trailing_semicolons(tmp_path):
-    "Trailing `;` separates nothing (it's Jupyter's output-suppression idiom) - only real separators count; and splitting a cell's last line (which has no line ending) must still insert newlines."
-    assert not _has_msg(_msgs(_check_nb(tmp_path, ["s.run_cell('a=1');"])), "semicolon statement separator")
-    assert not _has_msg(_msgs(_check_py(tmp_path, "x = print();\n")), "semicolon statement separator")
-    assert _has_msg(_msgs(_check_py(tmp_path, "a = 1; b = 2;\n")), "semicolon statement separator")
-    p = _write_nb(tmp_path, "t.ipynb", ["#| hide\nimport nbdev; nbdev.nbdev_export()"])
-    chkstyle.main(["chkstyle", "--fix", "--fix-rule", "semicolon", str(p)])
-    nb = json.loads(p.read_text(encoding="utf-8"))
-    src = nb["cells"][0]["source"]
-    if not isinstance(src, str): src = "".join(src)
-    assert src == "#| hide\nimport nbdev\nnbdev.nbdev_export()", repr(src)
-
-def test_chkstyle_skips_ipython_magics(tmp_path):
-    "IPython `!`/`%` lines (including `\\` continuations) and `%%` cell magics aren't Python: no syntax errors, but the cell's real code is still checked."
-    msgs = _msgs(_check_nb(tmp_path, ["!exec_nb --help", "%%bash\nls | wc -l", "%time x = 1\ny: int = 2",
-        "!codex exec --json \\\n    -c key=val \\\n    'p' > out.jsonl\nz: int = 3"]))
-    assert not _has_msg(msgs, "syntax error"), msgs
-    assert _has_msg(msgs, "lhs assignment annotation"), msgs
-
-def test_chkstyle_assigned_magics_and_literal_text(tmp_path):
-    sources = ["v = %apl ⍳3\nx: int = 2", "files = !ls\ny: int = 3", "len??\nz: int = 4",
-        "if ready:\n    v = %apl ⍳3\nx: int = 5", 'text = """literal\n%apl ⍳3\n"""\nx: int = 6']
-    issues = _check_nb(tmp_path, sources)
-    assert not _has_msg(_msgs(issues), "syntax error"), issues
-    assert [(i[0].split(':cell')[1], i[1]) for i in issues if i[2] == 'lhs-assignment-annotation'] == [
-        ('[cell0]', 2), ('[cell1]', 2), ('[cell2]', 2), ('[cell3]', 3), ('[cell4]', 4)]
-    p = _write_nb(tmp_path, 't.ipynb', sources)
-    assert chkstyle.fix_notebook(str(p), {'lhs-assignment-annotation', 'single-statement-body'})
-    cells = json.loads(p.read_text())['cells']
-    assert [c['source'] for c in cells] == [s.replace(': int', '') for s in sources]
-
-def test_chkstyle_flags_bare_lhs_annotation(tmp_path):
-    assert _has_msg(_msgs(_check_py(tmp_path, """
-        x: int
-        """)), "lhs assignment annotation")
-
-def test_chkstyle_allows_import_used_in_nested_function(tmp_path):
-    assert _check_py(tmp_path, """
-        import os
-
+def test_import_analysis_resolves_closures_annotations_exports_and_comprehension_shadowing():
+    src = _source('''
+        import os, sys, math, pathlib
+        from collections import Counter
+        __all__ = ["Counter"]
         def outer():
             def inner(): return os.getcwd()
             return inner()
-        """) == []
-
-def test_chkstyle_allows_import_used_in_lambda_and_listcomp(tmp_path):
-    assert _check_py(tmp_path, """
-        import os
-        f = lambda: os.getcwd()
-        xs = [p for p in os.listdir('.')]
-        """) == []
-
-def test_chkstyle_flags_import_shadowed_in_listcomp(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        import os
-        xs = [os for os in range(3)]
-        """))
-    assert _has_msg(msgs, "unused import: os"), msgs
-
-def test_chkstyle_allows_import_used_in___all__(tmp_path):
-    assert _check_py(tmp_path, """
-        from .mod import foo, bar
-
-        __all__ = ["foo"]
-        __all__ += ["bar"]
-        """) == []
-
-def test_chkstyle_never_flags___all__(tmp_path):
-    long_all = ', '.join(f'"item_{i}"' for i in range(30))
-    assert _check_py(tmp_path, f"""
-        __all__ = [{long_all}]
-        """) == []
-    assert _check_py(tmp_path, """
-        __all__ = [
-            "one",
-            "two",
-            "three",
-        ]
-        """) == []
-
-def test_chkstyle_allows_type_only_import_with_future_annotations(tmp_path):
-    assert _check_py(tmp_path, """
-        from __future__ import annotations
-        from pathlib import Path
-
-        def f(x: Path) -> Path: return x
-        """) == []
-
-def test_chkstyle_skips_unused_import_rule_in___init__(tmp_path):
-    path = _write(tmp_path, "__init__.py", "from .mod import foo\n")
-    assert chkstyle.check_file(str(path)) == []
-
-def test_chkstyle_notebook_unused_import_checks_only_export_cells(tmp_path):
-    assert _check_nb(tmp_path, ["import os\n"]) == []
-
-def test_chkstyle_notebook_flags_exported_import_used_only_in_non_export_cells(tmp_path):
-    violations = _check_nb(tmp_path, ["#| export\nimport os\n", "import sys\n", "print(os.getcwd())\n"])
-    msgs = _msgs(violations)
-    assert _has_msg(msgs, "exported-cell import only used in non-exported cells: os"), msgs
-    assert any("cell1" in msg for msg in msgs), msgs
-    assert not _has_msg(msgs, "unused import: os"), msgs
-    assert len(violations) == 1 and violations[0][1] == 2
-
-def test_chkstyle_notebook_exported_import_message_falls_back_without_import_cell(tmp_path):
-    msgs = _msgs(_check_nb(tmp_path, ["#| export\nimport os\n", "print(os.getcwd())\n"]))
-    assert _has_msg(msgs, "exported-cell import only used in non-exported cells: os"), msgs
-    assert not any("move imports used only in non-exported cells to cell" in msg for msg in msgs), msgs
-
-def test_chkstyle_notebook_allows_exported_import_used_in_later_export_cell(tmp_path):
-    assert _check_nb(tmp_path, ["#| export\nimport os\n", "#| export\nprint(os.getcwd())\n"]) == []
-
-META_EXPORT = {"nbdev": {"export": "true"}}
-
-def test_chkstyle_notebook_honors_meta_directives(tmp_path):
-    "nbdev directives in cell metadata count the same as `#| export` comment lines"
-    assert _check_nb(tmp_path, ["#| export\nimport os\n", ("print(os.getcwd())\n", META_EXPORT)]) == []
-    msgs = _msgs(_check_nb(tmp_path, [("import os\nprint(os.getcwd())\n", META_EXPORT)]))
-    assert not _has_msg(msgs, "cell mixes imports and other code"), msgs
-
-def test_chkstyle_notebook_flags_truly_unused_exported_import(tmp_path):
-    msgs = _msgs(_check_nb(tmp_path, ["#| export\nimport os\n"]))
-    assert _has_msg(msgs, "unused import: os"), msgs
-
-def test_chkstyle_notebook_reports_violations(tmp_path):
-    msgs = _msgs(_check_nb(tmp_path, ["x: int = 1\ndata = {'a': 1, 'b': 2, 'c': 3}\n"]))
-    assert _has_msg(msgs, "lhs assignment annotation")
-    assert _has_msg(msgs, "dict literal with 3+ identifier keys")
-
-def test_chkstyle_notebook_shows_cell_id_in_path(tmp_path):
-    violations = _check_nb(tmp_path, ["x: int = 1\n"])
-    assert len(violations) == 1
-    vpath, lineno, rule, msg, lines = violations[0]
-    assert ":cell[cell0]" in vpath and lineno == 1
-
-def test_chkstyle_notebook_shows_line_within_cell(tmp_path):
-    violations = _check_nb(tmp_path, ["# ok\n# still ok\nx: int = 1\n"])
-    assert len(violations) == 1 and violations[0][1] == 3
-
-def test_chkstyle_notebook_multiple_cells(tmp_path):
-    violations = _check_nb(tmp_path, ["x = 1\n", "y: int = 2\n", "z: str = 'hi'\n"])
-    assert len(violations) == 2
-    paths = {v[0] for v in violations}
-    assert any("cell1" in p for p in paths) and any("cell2" in p for p in paths)
-
-def test_chkstyle_notebook_skip_pragma(tmp_path):
-    assert _check_nb(tmp_path, ["# chkstyle: skip\nx: int = 1\n"]) == []
-    exported = ["#| export\nimport os\n", "#| export\n# chkstyle: skip\nprint(os.getcwd())\n"]
-    assert _check_nb(tmp_path, exported) == []
-
-def test_chkstyle_notebook_ignore_pragma(tmp_path):
-    assert _check_nb(tmp_path, ["x: int = 1  # chkstyle: ignore\n"]) == []
-
-def test_chkstyle_notebook_flags_mixed_imports_and_code(tmp_path):
-    violations = _check_nb(tmp_path, ["import os\nprint(os.getcwd())\n"])
-    assert len(violations) == 1
-    vpath, lineno, rule, msg, lines = violations[0]
-    assert rule == "mixed-imports" and lineno == 1 and "cell0" in vpath
-    assert _has_msg({msg}, "cell mixes imports and other code")
-    violations = _check_nb(tmp_path, ["# setup\nx = 1\nfrom pathlib import PurePath\n"])
-    assert [v[2] for v in violations] == ["mixed-imports"] and violations[0][1] == 3
-
-def test_chkstyle_notebook_skips_nbdev_export_cell(tmp_path):
-    assert _check_nb(tmp_path, ["import nbdev; nbdev.nbdev_export()\n"]) == []
-
-def test_chkstyle_notebook_mixed_imports_allowed_cases(tmp_path):
-    for cells in (["import os, sys\n"],  # imports only
-            ["import os\n", "print(os.getcwd())\n"],  # separate cells
-            ["#| export\nimport os\nprint(os.getcwd())\n"],  # exported cells exempt
-            ["#| exec_doc\nimport os\nprint(os.getcwd())\n"],  # exec_doc exempt
-            ["#| eval: false\nimport os\nprint(os.getcwd())\n"],  # eval false exempt
-            ["import nbdev\nnbdev_export()\n"],  # nbdev_export cell exempt
-            ["try: import foo\nexcept ImportError: foo=None\nprint(1)\n"],  # try-import allowed
-            ["def f():\n    import os\n    return os.getcwd()\nprint(f())\n"],  # import in def allowed
-            ["import os\ndef f(): return os.getcwd()\n"]):  # import + def, no top-level code
-        assert "mixed-imports" not in {v[2] for v in _check_nb(tmp_path, cells)}, cells
-
-def test_chkstyle_notebook_mixed_imports_ignore_pragma(tmp_path):
-    cells = ["import os  # chkstyle: ignore\nprint(os.getcwd())\n"]
-    assert "mixed-imports" not in {v[2] for v in _check_nb(tmp_path, cells)}
-
-def test_chkstyle_check_path_dispatches_correctly(tmp_path):
-    py_path, nb_path = _write(tmp_path, "t.py", "x: int = 1\n"), _write_nb(tmp_path, "t.ipynb", ["y: int = 2\n"])
-    py_v, nb_v = chkstyle.check_path(str(py_path)), chkstyle.check_path(str(nb_path))
-    assert len(py_v) == len(nb_v) == 1 and "cell" not in py_v[0][0] and "cell" in nb_v[0][0]
-
-def test_chkstyle_main_accepts_notebook_path(tmp_path):
-    assert chkstyle.main(["chkstyle", str(_write_nb(tmp_path, "t.ipynb", ["x: int = 1\n"]))]) == 1
-
-def test_chkstyle_iter_py_files_includes_notebooks(tmp_path):
-    _write(tmp_path, "t.py", "x = 1\n")
-    _write_nb(tmp_path, "t.ipynb", ["y = 2\n"])
-    files = list(chkstyle.iter_py_files(str(tmp_path)))
-    assert any(f.endswith(".py") for f in files) and any(f.endswith(".ipynb") for f in files)
-
-def test_chkstyle_if_with_multiline_else_still_flags_single_if_body(tmp_path):
-    "If body should be flagged even when else body is multi-line."
-    assert _has_msg(_msgs(_check_py(tmp_path, """
-        import os
-        def main():
-            root = '.'
-            if os.path.isfile(root):
-                print(root)
-            else:
-                a = 1
-                b = 2
-        """)), "if single-statement body not one-liner")
-
-def test_chkstyle_pragma_in_string_not_suppressed(tmp_path):
-    "Pragma strings in code (not comments) should not trigger suppression."
-    violations = _check_py(tmp_path, """
-        def check_pragma(line):
-            if "chkstyle: off" in line:
-                return True
-            return False
-        x: int = 1
-        """)
-    assert _has_msg(_msgs(violations), "lhs assignment annotation"), f"Got: {_msgs(violations)}"
-
-def test_chkstyle_messages_include_hints(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        def f(x: list[list[int]]): return x
-        y: list[int] = [
-            1,
-            2,
-        ]
-        """))
-    assert any(msg.startswith("nested generics depth 2") and "hint:" in msg for msg in msgs), msgs
-    assert any(msg.startswith("inefficient multiline expression") and "hint:" in msg for msg in msgs), msgs
-
-def test_chkstyle_nested_generics_only_parameter_annotations(tmp_path):
-    msgs = _msgs(_check_py(tmp_path, """
-        x: list[list[int]] = []
-        def f() -> list[list[int]]: return []
-        """))
-    assert not _has_msg(msgs, "nested generics depth 2"), msgs
-    assert _has_msg(msgs, "lhs assignment annotation"), msgs
-
-def test_chkstyle_core_py_no_violations():
-    "core.py should have no style violations."
-    import pathlib
-    core_path = pathlib.Path(__file__).parent.parent / "chkstyle" / "core.py"
-    violations = chkstyle.check_file(str(core_path))
-    assert violations == [], f"Unexpected violations in core.py: {[v[:4] for v in violations]}"
-
-def _rules(violations): return {v[2] for v in violations}
-
-def test_chkstyle_notebook_narrative_rules(tmp_path):
-    "Each narrative rule fires once on a crafted nbdev notebook, gated by `default_exp`."
-    long_exp = "#| export\n" + "".join(f"x{i} = {i}\n" for i in range(51))
-    long_ex = "".join(f"y{i} = {i}\n" for i in range(11))
-    violations = _check_nb(tmp_path, [
-        "#| default_exp core\n",
-        _md("# Title"),
-        "#| export\ndef a(): pass\ndef b(): pass\ndef c(): pass\ndef d(): pass\n",
-        long_exp,
-        _md("words"),
-        "#| export\ndef pub(): pass\n",
-        "#| export\ndef pub2(): pass\n",
-        "#| export\nz = 1\n",
-        _md("reset"),
-        long_ex,
-        "y1  # a comment\n",
-        "y2\n",
-        "y1 + y2\n",
-    ])
-    assert _rules(violations) == {"too-many-defs", "long-exported-cell", "long-implementation-run",
-        "long-example-cell", "comment-in-example", "example-run"}
-
-def test_chkstyle_notebook_narrative_exemptions(tmp_path):
-    "Docments, directives, pragmas, hidden cells, and import cells don't trigger narrative rules; ungated notebooks skip them entirely."
-    cells = [
-        "#| default_exp core\n",
-        _md("intro"),
-        "def sums(\n    a:int,  # First thing to sum\n    b:int=1 # Second thing to sum\n) -> int: # The sum\n    'Adds.'\n    return a + b\n",
-        "#| hide\n# a hidden comment\nq = 1\n",
-        "#| exporti\ndef helper(): pass  # internal\n",
-        "import json\n",
-        "sums(1)\n",
-        "sums(2)  # chkstyle: ignore\n",
-    ]
-    assert _check_nb(tmp_path, cells) == []
-    ungated = [_md("intro"), "y1  # a comment\n"]
-    assert _check_nb(tmp_path, ungated) == []
-    assert _rules(chkstyle.check_notebook(str(_write_nb(tmp_path, "index.ipynb", ungated)))) == {"comment-in-example"}
-
-def test_chkstyle_statements_between_lessons(tmp_path):
-    intro = ["#| default_exp core\n", _md("Introduction")]
-    exported = "#| export\n" + "".join(f"x{i} = {i}\n" for i in range(24))
-    extra = "#| export\ny = 1\n"
-    lesson = [_md("Use the helper."), "helper()\n"]
-    rule = "long-implementation-run"
-    assert rule not in _rules(_check_nb(tmp_path, [*intro, exported]))
-    for gap in [[], [_md("Explanation only")], ["helper()\n"], ["helper()\n", _md("Too late")],
-                [_md("Imports are not a lesson"), "import math\n"],
-                [_md("Directives are not a lesson"), "#| eval: false\n"],
-                [_md("Hidden code is not a lesson"), "#| hide\nhelper()\n"],
-                [_md("Skipped code is not a lesson"), "# chkstyle: skip\nhelper()\n"],
-                [_md("Before implementation"), extra, "helper()\n"]]:
-        assert rule in _rules(_check_nb(tmp_path, [*intro, exported, *gap, extra]))
-    violations = _check_nb(tmp_path, [*intro, exported, extra, exported, *lesson, exported, extra])
-    runs = [v for v in violations if v[2] == rule]
-    assert len(runs) == 2
-    assert all("exported statement score 25" in v[3] for v in runs)
-    setup = ["#| export\nimport math\n", "#| export\n", "import json\n"]
-    assert rule not in _rules(_check_nb(tmp_path, [*intro, exported, lesson[0], *setup, lesson[1], exported]))
-
-def test_chkstyle_statement_count_ignores_cell_boundaries(tmp_path):
-    intro, rule = ["#| default_exp core\n"], "long-implementation-run"
-    helper = "def _helper(): return 1\n"
-    variants = ["#| export\n" + helper, "#| exports\nasync " + helper, "#| exporti\n" + helper,
-                (helper, {"nbdev": {"export": "true"}})]
-    for definition in variants:
-        assert rule not in _rules(_check_nb(tmp_path, intro + [definition]*24))
-        assert rule in _rules(_check_nb(tmp_path, intro + [definition]*25))
-    assert rule not in _rules(_check_nb(tmp_path, [*intro, "#| export\n" + helper*24]))
-    assert rule in _rules(_check_nb(tmp_path, [*intro, "#| export\n" + helper*25]))
-    for pragma in ("#| hide", "# chkstyle: skip", "# chkstyle: off"):
-        cell = f"#| export\n{pragma}\n" + helper*25
-        assert rule not in _rules(_check_nb(tmp_path, [*intro, cell]))
-
-def test_chkstyle_tiny_definitions_score_one(tmp_path):
-    intro, rule = ["#| default_exp core\n"], "long-implementation-run"
-    setup = "#| export\n" + "".join(f"x{i} = {i}\n" for i in range(23))
-    for definition in ["def f(): return 1", "def f():\n    return 1", "async def f(): return await g()",
-                       "def f():\n    'Docs.'\n    import math\n    return math.pi", "def f(): x = 1"]:
-        cells = [*intro, setup, "#| export\n" + definition]
-        assert rule not in _rules(_check_nb(tmp_path, cells))
-        assert rule in _rules(_check_nb(tmp_path, [*cells, "#| export\ny = 1"]))
-    client = r"""#| export
-class Client:
-    @property
-    def name(self): return 'client'
-    def __enter__(self): return self
-    def __exit__(self, *args): self.close()
-"""
-    assert rule not in _rules(_check_nb(tmp_path, intro + [client]*4))
-    assert rule in _rules(_check_nb(tmp_path, intro + [client]*4 + ["#| export\ny = 1"]))
-    for definition in ["def f(): x = 1; return x", "def f():\n    if x: return 1",
-                       "def f():\n    match x:\n        case 1: return 1", "def f():\n    def g(): return 1"]:
-        assert rule in _rules(_check_nb(tmp_path, [*intro, setup, "#| export\n" + definition]))
-
-def test_chkstyle_counts_nested_statements_not_layout(tmp_path):
-    intro, rule = ["#| default_exp core\n"], "long-implementation-run"
-    body = r"""class Client:
-    'Client docs.'
-    def run(self):
-        'Method docs.'
-        import math
-        x = math.sqrt(4)
-        if x: return x
-        return 0
-"""
-    extra = "#| export\ny = 1\n"
-    cell = "#| export\n" + body
-    assert rule not in _rules(_check_nb(tmp_path, [*intro, cell, cell, *[extra]*4]))
-    assert rule in _rules(_check_nb(tmp_path, [*intro, cell, cell, *[extra]*5]))
-    wrapped = cell.replace("if x: return x", "if x:\n            return x")
-    assert rule not in _rules(_check_nb(tmp_path, [*intro, wrapped, wrapped, *[extra]*4]))
-    assert rule in _rules(_check_nb(tmp_path, [*intro, wrapped, wrapped, *[extra]*5]))
-
-def test_chkstyle_narrative_counts_logical_lines(tmp_path):
-    "Multiline strings are one logical unit, so a big docstring or literal doesn't make a cell 'long'."
-    doc_lines = "\n".join(f"line {i}" for i in range(60))
-    big_str = '"""\n' + "line\n" * 15 + '"""'
-    cells = [
-        "#| default_exp core\n",
-        _md("words"),
-        f'#| export\ndef pub():\n    """Docs.\n\n{doc_lines}\n    """\n    return 1\n',
-        _md("more words"),
-        f"ask({big_str})\n",
-    ]
-    assert _check_nb(tmp_path, cells) == []
-
-
-def test_chkstyle_config_nb_narrative_flag(tmp_path, capsys):
-    "`nb-narrative = false` disables the narrative rules but not mixed-imports."
-    p = _write_nb(tmp_path, "index.ipynb", ["y1  # a comment\n"])
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.chkstyle]
-        nb-narrative = false
-        """), encoding="utf-8")
-    assert chkstyle.main(["chkstyle", str(p)]) == 0
-    p2 = _write_nb(tmp_path, "index2.ipynb", ["import os\nprint(os.getcwd())\n"])
-    assert chkstyle.main(["chkstyle", str(p2)]) == 1
-    assert "mixes imports" in capsys.readouterr().out
-
-def test_chkstyle_fix_resplits_wide_expressions(tmp_path):
-    p = _write(tmp_path, "t.py", '''
-        def auth_url(client, redirect_uri, scopes, challenge, state):
-            return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({
-                'client_id': client['client_id'], 'redirect_uri': redirect_uri, 'response_type': 'code',
-                'scope': ' '.join(scopes), 'access_type': 'offline', 'prompt': 'consent',
-                'include_granted_scopes': 'true', 'code_challenge': challenge,
-                'code_challenge_method': 'S256', 'state': state})
+        f = lambda: sys.version_info
+        xs = [math for math in range(3)]
+        def typed(value: pathlib.Path) -> pathlib.Path: return value
         ''')
-    chkstyle.main(["chkstyle", "--fix", str(p)])
-    fixed = p.read_text(encoding="utf-8")
-    assert "dict(client_id=client['client_id']" in fixed
-    assert all(len(line) <= 140 for line in fixed.splitlines())
-    assert chkstyle.check_file(str(p)) == []
-    p2 = _write(tmp_path, "t2.py", '''
-        cfg = {
-            'alpha': 'a' * 200,
-            'beta': '%s',
-            'gamma': 3}
-        ''' % ("x" * 130))
-    before = p2.read_text(encoding="utf-8")
-    chkstyle.main(["chkstyle", "--fix", str(p2)])
-    assert p2.read_text(encoding="utf-8") == before
+    assert [v[3].split(" (hint:")[0] for v in _check(src) if v[2] == "unused-import"] == ["unused import: math"]
+    fixed = _fix(src, ["unused-import"])
+    assert "import os, sys, pathlib\n" in fixed and "unused-import" not in _rules(_check(fixed))
+    assert _run(src)["xs"] == _run(fixed)["xs"] == [0, 1, 2]
+    assert chkstyle.check_source("from .mod import foo\n", "pkg/__init__.py") == []
 
-def test_get_source_segment_matches_ast():
+
+def test_source_segment_matches_the_stdlib_for_multiline_and_utf8_nodes():
     src = 'x = {"a": 1,\n     "é": [2, 3]}\ny = "ü"; z = f(1,\n  2)\n'
     for node in ast.walk(ast.parse(src)):
         if hasattr(node, "lineno"): assert chkstyle.get_source_segment(src, node) == ast.get_source_segment(src, node)
 
-def test_user_config_skips_add_to_project_config(tmp_path, monkeypatch, capsys):
-    (tmp_path / "xdg/chkstyle").mkdir(parents=True)
-    (tmp_path / "xdg/chkstyle/config.toml").write_text('skip_paths = ["_proc"]\n')
+
+def test_notebook_fix_preserves_ipython_commands_literal_text_and_diagnostic_locations(tmp_path):
+    sources = ["v = %apl ⍳3\nx: int = 2", "files = !ls\ny: int = 3", "len??\nz: int = 4",
+        "if ready:\n    v = %apl ⍳3\nx: int = 5", 'text = """literal\n%apl ⍳3\n"""\nx: int = 6',
+        "!codex exec --json \\\n    -c key=val \\\n    'p' > out.jsonl\nz: int = 7", "%%bash\nls | wc -l", "# chkstyle: skip\nnot valid Python!\n",
+        "a = 1; b = 2"]
+    path = _notebook(tmp_path, [dict(source=s.splitlines(True)) if i == 1 else s for i, s in enumerate(sources)])
+    issues = chkstyle.check_notebook(str(path))
+    assert "syntax-error" not in _rules(issues)
+    assert [(v[0].split(":cell")[1], v[1]) for v in issues if v[2] == "lhs-assignment-annotation"] == [
+        ("[cell0]", 2), ("[cell1]", 2), ("[cell2]", 2), ("[cell3]", 3), ("[cell4]", 4), ("[cell5]", 4)]
+    assert chkstyle.fix_notebook(str(path), {"lhs-assignment-annotation", "single-statement-body", "semicolon"})
+    cells = json.loads(path.read_text())["cells"]
+    assert ["".join(c["source"]) for c in cells] == [s.replace(": int", "") for s in sources[:-1]] + ["a = 1\nb = 2"]
+    assert isinstance(cells[1]["source"], list)
+    assert chkstyle.check_notebook(str(path)) == []
+    before = path.read_text()
+    assert not chkstyle.fix_notebook(str(path), {"all"}) and path.read_text() == before
+
+
+def test_notebook_imports_are_analyzed_as_an_exported_module_not_as_isolated_cells(tmp_path):
+    path = _notebook(tmp_path, ["#| export\nimport os, sys, math\n", "import json\n", "print(sys.version_info)\n",
+        dict(source="print(os.getcwd())\n", metadata={"nbdev": {"export": "true"}}),
+        "import pathlib\nprint(pathlib.Path('.'))\n", "#| exec_doc\nimport typing\nprint(typing.Any)\n",
+        "#| export\n# chkstyle: skip\nprint(math.pi)\n",
+        "import nbdev; nbdev.nbdev_export()\n"])
+    issues = chkstyle.check_notebook(str(path))
+    assert [(v[2], v[0].split(":cell")[1], v[1]) for v in issues] == [
+        ("exported-import-nonexport", "[cell0]", 2), ("mixed-imports", "[cell4]", 1)]
+    assert "sys" in issues[0][3] and "cell1" in issues[0][3]
+    nb = json.loads(path.read_text())
+    nb["cells"][2]["metadata"] = {"nbdev": {"export": "true"}}
+    nb["cells"][4]["source"] = "import pathlib  # chkstyle: ignore\nprint(pathlib.Path('.'))\n"
+    path.write_text(json.dumps(nb))
+    assert chkstyle.check_notebook(str(path)) == []
+    nb["cells"][0]["source"] += "import collections\n"
+    path.write_text(json.dumps(nb))
+    assert _rules(chkstyle.check_notebook(str(path))) == {"unused-import"}
+
+
+@pytest.mark.xfail(raises=AssertionError, strict=True, reason="A skipped unparsable cell poisons valid-cell import analysis.")
+def test_skipped_invalid_cell_preserves_import_usage_in_valid_notebook_cells(tmp_path):
+    cells = ["#| export\nimport sys\n", "print(sys.version_info)\n"]
+    expected = _check_nb(tmp_path, cells)
+    assert _rules(expected) == {"exported-import-nonexport"}
+    assert _check_nb(tmp_path, [*cells, "# chkstyle: skip\nnot valid Python!\n"]) == expected
+
+
+def test_notebook_narrative_tracks_lessons_in_document_order_not_cell_layout(tmp_path):
+    intro = ["#| default_exp core\n", dict(cell_type="markdown", source="Introduction")]
+    exported = "#| export\n" + "".join(f"x{i} = {i}\n" for i in range(24))
+    extra = "#| export\ny = 1\n"
+    lesson = [dict(cell_type="markdown", source="Use the helper."), "helper()\n"]
+    rule = "long-implementation-run"
+    cells = [*intro, exported, dict(cell_type="markdown", source="Prose alone"), extra,
+        exported, *lesson, exported, extra]
+    issues = _check_nb(tmp_path, cells)
+    runs = [v for v in issues if v[2] == rule]
+    assert [(v[0].split(":cell")[1], v[1]) for v in runs] == [("[cell4]", 2), ("[cell9]", 2)]
+    for gap in (["helper()\n"], [lesson[0], "import math\n"], [lesson[0], extra, lesson[1]]):
+        assert rule in _rules(_check_nb(tmp_path, [*intro, exported, *gap, extra]))
+    setup = ["#| export\nimport math\n", "#| export\n", "#| hide\nhelper()\n", "# chkstyle: skip\nhelper()\n"]
+    assert rule not in _rules(_check_nb(tmp_path, [*intro, exported, lesson[0], *setup, lesson[1], exported]))
+
+
+def test_notebook_narrative_scores_structure_and_exempts_docs_and_non_narrative_notebooks(tmp_path):
+    intro, rule = ["#| default_exp core\n"], "long-implementation-run"
+    for helper in ("def f(): return 1\n", "async def f(): return await g()\n", "def f():\n    'Docs.'\n    import math\n    return math.pi\n"):
+        for cells in (["#| export\n" + helper * 24], [dict(source=helper, metadata={"nbdev": {"export": "true"}})] * 24):
+            assert rule not in _rules(_check_nb(tmp_path, intro + cells))
+            assert rule in _rules(_check_nb(tmp_path, intro + cells + ["#| export\nx = 1"]))
+    setup = "#| export\n" + "x = 1\n" * 23
+    for body in ("if x: return 1", "if x:\n        return 1", "def g(): return 1"):
+        assert rule in _rules(_check_nb(tmp_path, [*intro, setup, "#| export\ndef f():\n    " + body]))
+    cells = [*intro, "#| export\ndef a(): pass\ndef b(): pass\ndef c(): pass\ndef d(): pass\n",
+        "#| export\n" + "x = 1\n" * 51, dict(cell_type="markdown", source="Examples"),
+        "y = 1\n" * 11, "y # explain\n", "y\n", "y + 1\n"]
+    assert _rules(_check_nb(tmp_path, cells)) == {
+        "too-many-defs", "long-exported-cell", "long-implementation-run", "long-example-cell", "comment-in-example", "example-run"}
+    logical = [*intro, '#| export\ndef f():\n    """' + "Documentation.\n" * 60 + '"""\n    return 1\n',
+        dict(cell_type="markdown", source="A literal is one unit"), 'ask("""' + "line\n" * 15 + '""")\n']
+    assert _check_nb(tmp_path, logical) == []
+    assert _check_nb(tmp_path, ["y # explain\n"]) == []
+    assert _rules(_check_nb(tmp_path, ["y # explain\n"], "index.ipynb")) == {"comment-in-example"}
+
+
+def test_cli_combines_user_project_config_traverses_sources_and_overrides_fix_selection(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / "pyproject.toml").write_text('[tool.chkstyle]\nskip_paths = ["gen"]\n')
-    for d in ("_proc", "gen", "src"):
-        (proj / d).mkdir()
-        (proj / d / "t.py").write_text("x: int = 1\n")
-    chkstyle.main(["chkstyle", str(proj)])
+    _write(tmp_path, "xdg/chkstyle/config.toml", 'skip_paths = ["_proc"]\nignore = ["lhs-assignment-annotation"]\n')
+    root = tmp_path / "proj"
+    _write(root, "pyproject.toml", '''
+        [tool.chkstyle]
+        skip_paths = ["gen"]
+        skip-path-re = "_modidx.py"
+        ignore = ["semicolon"]
+        fix = ["dict-literal"]
+        ''')
+    src = 'x: int = 1\ndata = {"a": 1, "b": 2, "c": 3}\na = 1; b = 2\n'
+    files = {name: _write(root, name, src) for name in ("_proc/t.py", "gen/t.py", "pkg/_modidx.py", "pkg/a.py")}
+    nb_path = _notebook(root, [src], "pkg/t.ipynb")
+    monkeypatch.chdir(tmp_path)
+    assert chkstyle.main(["chkstyle", "--fix", "proj/pkg"]) == 0
+    assert chkstyle.main(["chkstyle", "--fix", "proj"]) == 0
+    assert files["pkg/a.py"].read_text() == src.replace('{"a": 1, "b": 2, "c": 3}', "dict(a=1, b=2, c=3)")
+    assert "data = dict(" in json.loads(nb_path.read_text())["cells"][0]["source"]
+    for name in ("_proc/t.py", "gen/t.py", "pkg/_modidx.py"): assert files[name].read_text() == src
+    capsys.readouterr()
+    assert chkstyle.main(["chkstyle", "--fix", "--fix-rule", "lhs-assignment-annotation", "--skip-path", "_proc",
+        "--skip-path-re", "^never$", "proj"]) == 1
+    for name in ("gen/t.py", "pkg/_modidx.py"): assert files[name].read_text() == src.replace("x: int", "x")
+    assert files["_proc/t.py"].read_text() == src
     out = capsys.readouterr().out
-    assert "src/t.py" in out and "_proc" not in out and "gen/t.py" not in out
+    assert "gen/t.py" in out and "pkg/_modidx.py" in out and "_proc/t.py" not in out
+    assert "lhs-assignment-annotation" not in _rules(chkstyle.check_notebook(str(nb_path)))
